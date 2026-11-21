@@ -208,9 +208,12 @@
   <!-- 电费趋势 -->
   <section class="card chart-card">
     <div class="chart-head">
-      <h2>电费 · 近 24 小时趋势</h2>
+      <h2 id="elecChartTitle">电费 · 近 24 小时趋势</h2>
       <div class="chart-tools">
-        <span class="hint">按小时统计</span>
+        <span class="seg" data-window-chart="chart">
+          <button type="button" data-window="24h" class="on">24 小时</button>
+          <button type="button" data-window="7d">7 天</button>
+        </span>
         <span class="seg" data-chart="chart">
           <button type="button" data-mode="line" class="on">余量曲线</button>
           <button type="button" data-mode="bar">消耗柱状</button>
@@ -483,13 +486,26 @@ function _roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
+function chartWindowMs(id) {
+  if (id === "chart") {
+    const saved = localStorage.getItem("chartWindow_chart") || "24h";
+    return saved === "7d" ? 7 * 24 * 3600 * 1000 : 24 * 3600 * 1000;
+  }
+  return CHART_CONF[id].windowMs;
+}
+
 function renderChart(id, hoverIdx) {
   const cfg = CHART_CONF[id];
   const canvas = $(id);
   const empty = $(id === "chart" ? "chartEmpty" : "gasChartEmpty");
   const mode = localStorage.getItem("chartMode_" + id) || "line";
-  const buckets = bucketize(chartHistory(id), cfg.bucketMs, cfg.windowMs);
-  drawChart(canvas, empty, buckets, { ...cfg, mode, id, hover: hoverIdx });
+  const windowMs = chartWindowMs(id);
+  const buckets = bucketize(chartHistory(id), cfg.bucketMs, windowMs);
+  if (id === "chart") {
+    const title = $("elecChartTitle");
+    if (title) title.textContent = windowMs > 24 * 3600 * 1000 ? "电费 · 近 7 天趋势" : "电费 · 近 24 小时趋势";
+  }
+  drawChart(canvas, empty, buckets, { ...cfg, windowMs, mode, id, hover: hoverIdx });
 }
 
 /** 趋势图悬停/点击：显示鼠标位置最近的采样点 XY 数值 */
@@ -650,13 +666,27 @@ function drawChart(canvas, empty, pts, opts) {
 }
 
 // 趋势图模式切换（余量曲线 / 消耗柱状，选择持久化在 localStorage）
-document.querySelectorAll(".seg").forEach((seg) => {
+document.querySelectorAll(".seg[data-chart]").forEach((seg) => {
   const id = seg.getAttribute("data-chart");
   const saved = localStorage.getItem("chartMode_" + id) || "line";
   seg.querySelectorAll("button").forEach((btn) => {
     btn.classList.toggle("on", btn.getAttribute("data-mode") === saved);
     btn.addEventListener("click", () => {
       localStorage.setItem("chartMode_" + id, btn.getAttribute("data-mode"));
+      seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === btn));
+      renderChart(id);
+    });
+  });
+});
+
+// 电费时间范围切换（24 小时 / 7 天，选择持久化在 localStorage）
+document.querySelectorAll(".seg[data-window-chart]").forEach((seg) => {
+  const id = seg.getAttribute("data-window-chart");
+  const saved = localStorage.getItem("chartWindow_" + id) || "24h";
+  seg.querySelectorAll("button").forEach((btn) => {
+    btn.classList.toggle("on", btn.getAttribute("data-window") === saved);
+    btn.addEventListener("click", () => {
+      localStorage.setItem("chartWindow_" + id, btn.getAttribute("data-window"));
       seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === btn));
       renderChart(id);
     });
