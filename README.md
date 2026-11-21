@@ -1,16 +1,25 @@
-# 校园宿舍电费自动查询（校园e码通 / 建行电控电表）
+# 校园生活监控（电费 + 燃气）
 
-基于微信小程序「校园e码通」后端接口（建行 B2C 网关）的宿舍剩余电量定时查询与推送工具。
+基于微信生态后端接口的宿舍**电费**（校园e码通 / 建行电控电表）与**燃气**（港华 vcc-cbs，广州东永港华）余额定时查询与推送工具，附本地 Web 面板。
 完整项目背景与后续阶段见根目录 `campus_electricity_workplan.md`；
-接口协议细节见根目录 `campus_electricity_capture_spec.md`。
+接口协议细节见根目录 `campus_electricity_capture_spec.md` 与 `docs/REVERSE_GAS.md`。
 
 ## 协议摘要
+
+**电费（建行 B2C 网关）**
 
 - **网关**：`POST https://app.xiaoyuan.ccb.com/LHECISM/B2CMainPlat_00`，表单编码 `application/x-www-form-urlencoded`，无请求加密、无动态签名，可直接重放
 - **业务路由**：`TXCODE=YJF004` 查询电控余额；表单参数 `USERID` / `SKEY` / `roomid` 来自 `.env`，`PayType=elec`、`aid=""` 为固定值
 - **响应**：`status=="0"` 表示成功；剩余电量在 `data.bal`（字符串，如 `1001.20`），单位在 `data.meterflag`（如 `度`），`data.roomid` 可用于校对
 - **会话**：服务端每次响应通过 `Set-Cookie` 更新 `CCBIBS1` / `IN001`，程序使用 `httpx.Client` 会话自动维护，无需手工更新 Cookie
 - **鉴权失效判定**：HTTP 401/403、返回登录页 HTML、或 `msg` 提示登录失效 → 触发提醒重新抓包
+
+**燃气（港华 vcc-cbs）**
+
+- **接口**：`GET https://weixin.towngasvcc.com/nv1/vcc-cbs/charge/preCheck?subsId=<subsId>`，**`sign` 参数实测不校验**，带 `Authorization: Bearer <token>` 即可
+- **响应**：`datas.savingSum` 为气费余额（元），`datas.readingRptList[0].currReading` 为表读数
+- **鉴权**：OAuth token 来自微信（无法离线生成），失效后需重新抓包更新 `GAS_TOKEN`
+- 详见 `docs/REVERSE_GAS.md`
 
 ## 目录结构
 
@@ -20,12 +29,13 @@ campus-elec-monitor/
 ├── .env              # 真实凭据与宿舍参数（禁止提交）
 ├── .gitignore
 ├── requirements.txt  # httpx / python-dotenv / tzdata
-├── config.py         # 配置加载与校验
+├── config.py         # 配置加载与校验（电费 + 燃气）
 ├── query_elec.py     # YJF004 查询与响应解析
+├── query_gas.py      # 燃气余额查询与解析
 ├── notifier.py       # 推送：企业微信 / PushPlus / Server酱 / Bark
 ├── state.json        # 本地状态（上次电量、告警日期，防重复推送）
 ├── cookies.json      # 会话 Cookie 轮换持久化（自动生成，gitignore）
-├── main.py           # 主入口：查询 → 阈值判断 → 防骚扰 → 推送
+├── main.py           # 主入口：查询（电费+燃气）→ 阈值判断 → 防骚扰 → 推送
 ├── keep_alive.py     # 会话保活守护进程（高频折中方案）
 ├── web/
 │   ├── server.py     # 本地网页面板服务（仅 127.0.0.1）
@@ -57,12 +67,12 @@ python web/server.py --port 8877
 
 浏览器打开 **http://127.0.0.1:8877** 即可查看：
 
-- 剩余电量大数字 + 状态标签（充足 / 偏低 / 告急）
-- 阈值刻度条（告急 <5 / 预警 <20 可按 `.env` 调整）
+- **电费**：剩余电量大数字 + 状态标签（充足 / 偏低 / 告急）、阈值刻度条（告急 <5 / 预警 <20 可调）
+- **燃气**：气费余额大数字（元）+ 状态标签 + 阈值刻度条（低于 15 元提醒，可调）+ 户号/表读数
 - 上次查询时间、今日消耗、按趋势估算的预计可用天数
-- 近 24 小时电量趋势图（数据来自保活任务，每 10 分钟一个点）
-- 「立即刷新」按钮：实时查询一次（不触发推送；保活任务仍负责告警）
-- 页面每 30 秒自动同步一次；会话超过 32 分钟无更新会提示「可能已过期」
+- 近 24 小时趋势图（电费青色 / 燃气琥珀色，数据来自保活任务，每 10 分钟一个点）
+- 「立即刷新」按钮：实时查询电费+燃气一次（不触发推送；保活任务仍负责告警）
+- 页面每 30 秒自动同步一次；超过 32 分钟无更新会提示「可能已过期」
 
 服务只监听 `127.0.0.1`，不暴露到局域网。Ctrl+C 停止。
 
@@ -75,7 +85,11 @@ python web/server.py --port 8877
 | 请求体 `roomid` | `CCB_ROOMID` | 固化后的房间号，如 `134-33--250-501` |
 | 请求头 `Cookie` | `CCB_COOKIE` | 完整 Cookie 串（可留空，失败时补全） |
 | — | `CCB_ROOM_NAME` | 推送展示名（可选，如 `40栋-501`） |
-| — | `WARN_THRESHOLD` / `CRITICAL_THRESHOLD` | 两级阈值，单位与 `meterflag` 一致（如度） |
+| — | `WARN_THRESHOLD` / `CRITICAL_THRESHOLD` | 电费两级阈值，单位与 `meterflag` 一致（如度） |
+| 燃气 `preCheck` 的 `subsId` 参数 | `GAS_SUBSID` | 燃气户号内部 ID（填了它和 TOKEN 才启用燃气查询） |
+| 燃气请求头 `Authorization: Bearer x` | `GAS_TOKEN` | 微信 OAuth token（失效后需重新抓包） |
+| 燃气请求头 `Cookie` | `GAS_COOKIE` | 可选，`__h5_oauth_ticket__` 等 |
+| — | `GAS_WARN_THRESHOLD` | 燃气提醒阈值（元，默认 15） |
 | — | `WECOM_WEBHOOK` / `PUSHPLUS_TOKEN` / `SERVERCHAN_KEY` / `BARK_URL` | 推送凭据，留空则自动推断渠道；`none` 表示只打印不推送 |
 
 ## 安全边界（必须遵守）

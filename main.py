@@ -24,6 +24,7 @@ from pathlib import Path
 from config import ConfigError, Settings, load_settings
 from notifier import NotifyError, send_notification
 from query_elec import AuthExpiredError, QueryError, QueryResult, query_balance
+from query_gas import GasAuthExpiredError, GasQueryError, GasResult, query_gas
 
 BASE_DIR = Path(__file__).resolve().parent
 STATE_FILE = BASE_DIR / "state.json"
@@ -39,16 +40,6 @@ EXIT_QUERY_FAILED = 4
 AUTH_ALERT_COOLDOWN = timedelta(hours=1)   # 登录失效提醒冷却（保活模式下防刷屏）
 ERROR_ALERT_COOLDOWN = timedelta(hours=1)  # 查询失败提醒冷却
 HISTORY_MAX = 500  # state.json 中保留的历史查询点数（Web 趋势图用）
-
-
-def _maybe_invalidate_cookie_store() -> None:
-    """用户重新抓包更新 .env 后，丢弃旧的轮换 Cookie 缓存，避免旧 Cookie 覆盖新凭据。"""
-    try:
-        if COOKIE_STORE.exists() and ENV_FILE.exists() and ENV_FILE.stat().st_mtime > COOKIE_STORE.stat().st_mtime:
-            COOKIE_STORE.unlink(missing_ok=True)
-            print("[INFO] .env 已更新，已重置缓存 Cookie（cookies.json）")
-    except OSError:
-        pass
 
 
 def _now(settings: Settings) -> datetime:
@@ -140,9 +131,8 @@ def _push(settings: Settings, title: str, content: str, dry: bool) -> bool:
     return ok
 
 
-def run_once(settings: Settings, dry_run: bool = False) -> int:
-    """执行一次完整流程：查询 → 阈值 → 推送。返回退出码。"""
-    _maybe_invalidate_cookie_store()
+def _run_elec(settings: Settings, dry_run: bool = False) -> int:
+    """电费查询流程：查询 → 阈值 → 推送。返回退出码。"""
     now = _now(settings)
     state = _load_state()
 
@@ -237,6 +227,121 @@ def run_once(settings: Settings, dry_run: bool = False) -> int:
     if notify and not push_ok and settings.push.channel != "none":
         return EXIT_ERROR
     return EXIT_OK
+
+
+def _run_gas(settings: Settings, dry_run: bool = False) -> int:
+    """燃气查询流程：查询 → 阈值 → 推送。返回退出码。"""
+    gas = settings.gas
+    now = _now(settings)
+    state = _load_state()
+
+    try:
+        result = query_gas(
+            gas.subsid,
+            gas.token,
+            settings.runtime.request_timeout,
+            settings.runtime.max_retries,
+            settings.runtime.trust_env,
+            gas.cookie,
+        )
+    except GasAuthExpiredError as exc:
+        print(f"[GAS-AUTH-EXPIRED] {_fmt_time(now)} {exc}")
+        title = "【燃气监控】Token 已失效，请更新 GAS_TOKEN"
+        content = (
+            f"户号：{gas.subsid[:12]}…\n"
+            f"原因：{exc}\n"
+            f"处理：重新打开燃气服务页，抓包取 Authorization: Bearer 更新 .env 的 GAS_TOKEN。\n"
+            f"时间：{_fmt_time(now)}"
+        )
+        if dry_run:
+            _push(settings, title, content, True)
+            return EXIT_AUTH_EXPIRED
+        state["gas_last_auth_error_at"] = now.isoformat()
+        if _cooldown_ok(state, "gas_last_auth_alert_at", now, AUTH_ALERT_COOLDOWN):
+            _push(settings, title, content, False)
+            state["gas_last_auth_alert_at"] = now.isoformat()
+        else:
+            print("[SKIP] 燃气失效提醒冷却中（1 小时），不重复推送")
+        _save_state(state)
+        return EXIT_AUTH_EXPIRED
+    except GasQueryError as exc:
+        print(f"[GAS-QUERY-FAILED] {_fmt_time(now)} {exc}")
+        title = "【燃气监控】查询失败"
+        content = f"户号：{gas.subsid[:12]}…\n原因：{exc}\n时间：{_fmt_time(now)}"
+        if dry_run:
+            _push(settings, title, content, True)
+            return EXIT_QUERY_FAILED
+        state["gas_last_error"] = {"time": now.isoformat(), "message": str(exc)}
+        if _cooldown_ok(state, "gas_last_error_alert_at", now, ERROR_ALERT_COOLDOWN):
+            _push(settings, title, content, False)
+            state["gas_last_error_alert_at"] = now.isoformat()
+        else:
+            print("[SKIP] 燃气查询失败提醒冷却中（1 小时），不重复推送")
+        _save_state(state)
+        return EXIT_QUERY_FAILED
+
+    level = "low" if result.balance < gas.warn_threshold else "ok"
+    reading = f"（表读数 {result.meter_reading}）" if result.meter_reading else ""
+    print(f"[GAS] {_fmt_time(now)} 剩余={result.balance_text} 状态={level}{reading}")
+
+    today = now.date().isoformat()
+    notify = False
+    if level == "low":
+        if (
+            settings.alert.warn_once_per_day
+            and state.get("gas_last_alert_date") == today
+            and state.get("gas_notified_level") in ("low", "critical")
+        ):
+            print("[SKIP] 燃气今日已提醒过，不重复推送")
+        else:
+            notify = True
+
+    push_ok = False
+    if notify:
+        title = "燃气余额不足"
+        content = (
+            f"户号：{result.subs_code}\n"
+            f"剩余：{result.balance_text}\n"
+            f"提醒阈值：< {gas.warn_threshold:g} 元\n"
+            f"查询时间：{_fmt_time(now)}"
+        )
+        push_ok = _push(settings, title, content, dry_run)
+
+    if not dry_run:
+        state.pop("gas_last_error", None)
+        state["gas_balance"] = round(result.balance, 2)
+        state["gas_last_query_time"] = now.isoformat()
+        state["gas_level"] = level
+        state["gas_meter_reading"] = result.meter_reading
+        hist = state.get("gas_history")
+        if not isinstance(hist, list):
+            hist = []
+        hist.append({"t": now.isoformat(timespec="seconds"), "bal": round(result.balance, 2)})
+        state["gas_history"] = hist[-HISTORY_MAX:]
+        if notify and (push_ok or settings.push.channel == "none"):
+            state["gas_last_alert_date"] = today
+            state["gas_notified_level"] = level
+        _save_state(state)
+
+    if notify and not push_ok and settings.push.channel != "none":
+        return EXIT_ERROR
+    return EXIT_OK
+
+
+def _worst_code(*codes: int) -> int:
+    """多数据源合并退出码：鉴权失效 > 查询失败 > 推送失败 > 成功。"""
+    for c in (EXIT_AUTH_EXPIRED, EXIT_QUERY_FAILED, EXIT_ERROR):
+        if c in codes:
+            return c
+    return EXIT_OK
+
+
+def run_once(settings: Settings, dry_run: bool = False) -> int:
+    """执行一轮完整监控：电费 + 燃气（若已配置）。返回合并退出码。"""
+    codes = [_run_elec(settings, dry_run)]
+    if settings.gas.enabled:
+        codes.append(_run_gas(settings, dry_run))
+    return _worst_code(*codes)
 
 
 def main(argv: list[str] | None = None) -> int:

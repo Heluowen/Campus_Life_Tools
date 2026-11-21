@@ -24,6 +24,7 @@ sys.path.insert(0, str(BASE))
 import main as m  # noqa: E402
 from config import ConfigError, load_settings  # noqa: E402
 from query_elec import AuthExpiredError, QueryError, query_balance  # noqa: E402
+from query_gas import GasAuthExpiredError, GasQueryError, query_gas  # noqa: E402
 
 
 def _load_state() -> dict:
@@ -47,6 +48,15 @@ def _status_payload() -> dict:
         "last_auth_error_at": state.get("last_auth_error_at"),
         "room": settings.api.display_room,
         "history": state.get("history") or [],
+        "gas_enabled": settings.gas.enabled,
+        "gas_balance": state.get("gas_balance"),
+        "gas_unit": "元",
+        "gas_level": state.get("gas_level") or "unknown",
+        "gas_warn_threshold": settings.gas.warn_threshold,
+        "gas_last_query_time": state.get("gas_last_query_time"),
+        "gas_meter_reading": state.get("gas_meter_reading"),
+        "gas_last_auth_error_at": state.get("gas_last_auth_error_at"),
+        "gas_history": state.get("gas_history") or [],
         "server_time": m._now(settings).strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -54,7 +64,6 @@ def _status_payload() -> dict:
 def _query_once() -> dict:
     """手动刷新：实时查询一次并更新状态（不触发推送，推送由保活任务负责）。"""
     settings = load_settings()
-    m._maybe_invalidate_cookie_store()
     now = m._now(settings)
     result = query_balance(
         settings.api,
@@ -73,8 +82,40 @@ def _query_once() -> dict:
         hist = []
     hist.append({"t": now.isoformat(timespec="seconds"), "bal": round(result.balance, 2)})
     state["history"] = hist[-m.HISTORY_MAX:]
+
+    gas_error = None
+    if settings.gas.enabled:
+        try:
+            gas = query_gas(
+                settings.gas.subsid,
+                settings.gas.token,
+                settings.runtime.request_timeout,
+                settings.runtime.max_retries,
+                settings.runtime.trust_env,
+                settings.gas.cookie,
+            )
+            state.pop("gas_last_error", None)
+            state["gas_balance"] = round(gas.balance, 2)
+            state["gas_last_query_time"] = now.isoformat()
+            state["gas_level"] = "low" if gas.balance < settings.gas.warn_threshold else "ok"
+            state["gas_meter_reading"] = gas.meter_reading
+            gh = state.get("gas_history")
+            if not isinstance(gh, list):
+                gh = []
+            gh.append({"t": now.isoformat(timespec="seconds"), "bal": round(gas.balance, 2)})
+            state["gas_history"] = gh[-m.HISTORY_MAX:]
+        except GasAuthExpiredError as exc:
+            state["gas_last_auth_error_at"] = now.isoformat()
+            gas_error = {"error": "gas-auth", "message": str(exc)}
+        except GasQueryError as exc:
+            state["gas_last_error"] = {"time": now.isoformat(), "message": str(exc)}
+            gas_error = {"error": "gas-query", "message": str(exc)}
+
     m._save_state(state)
-    return _status_payload()
+    payload = _status_payload()
+    if gas_error:
+        payload["gas_error"] = gas_error
+    return payload
 
 
 def _send_json(handler, code: int, payload: dict) -> None:

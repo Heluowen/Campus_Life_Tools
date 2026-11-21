@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>校园电费监控</title>
+<title>校园生活监控</title>
 <style>
   :root{
     --bg0:#0a0f1e; --bg1:#0e1830; --card:rgba(255,255,255,.045); --card-border:rgba(255,255,255,.09);
@@ -50,6 +50,7 @@
   .bal{display:flex;align-items:baseline;gap:10px;margin-top:10px}
   .bal .num{font-size:62px;font-weight:750;line-height:1;letter-spacing:-1.5px;font-variant-numeric:tabular-nums;
     background:linear-gradient(180deg,#fff,#9fe8ff 70%,#7dd3fc);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .bal.gas .num{background:linear-gradient(180deg,#fff,#ffe3a3 70%,#fbbf24);-webkit-background-clip:text;background-clip:text;color:transparent}
   .bal .unit{font-size:16px;color:var(--muted)}
   .bal-sub{font-size:12.5px;color:var(--faint);margin-top:8px}
 
@@ -60,6 +61,7 @@
   .gauge .marker{position:absolute;top:-4px;width:3px;height:18px;border-radius:2px;background:#fff;box-shadow:0 0 12px rgba(255,255,255,.8);transition:left .6s cubic-bezier(.22,1,.36,1)}
   .gauge .legend{display:flex;justify-content:space-between;margin-top:8px;font-size:11.5px;color:var(--faint)}
   .gauge .legend b{color:var(--muted);font-weight:600}
+  .gauge.gas .track{background:linear-gradient(90deg, rgba(248,113,113,.45) 0 25%, rgba(251,191,36,.4) 25% 50%, rgba(52,211,153,.3) 50% 100%)}
 
   .stats{display:flex;flex-direction:column;gap:10px;justify-content:center}
   .stat{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 14px;border-radius:14px;
@@ -109,8 +111,8 @@
     <div class="brand">
       <div class="logo">⚡</div>
       <div>
-        <h1>校园电费监控</h1>
-        <div class="sub" id="roomLabel">宿舍 · 正在加载…</div>
+        <h1>校园生活监控</h1>
+        <div class="sub" id="roomLabel">正在加载…</div>
       </div>
     </div>
     <div class="hdr-right">
@@ -119,10 +121,11 @@
     </div>
   </header>
 
-  <section class="card hero">
+  <!-- 电费 -->
+  <section class="card hero" id="elecCard">
     <div>
       <div class="bal-label">
-        <span>剩余电量</span>
+        <span>宿舍电费 · 剩余电量</span>
         <span class="pill unk" id="levelPill">未知</span>
       </div>
       <div class="bal">
@@ -153,9 +156,45 @@
     </div>
   </section>
 
+  <!-- 燃气 -->
+  <section class="card hero" id="gasCard" style="display:none">
+    <div>
+      <div class="bal-label">
+        <span>燃气余额 · 港华（广州东永港华）</span>
+        <span class="pill unk" id="gasLevelPill">未知</span>
+      </div>
+      <div class="bal gas">
+        <span class="num" id="gasBalanceNum">--</span>
+        <span class="unit">元</span>
+      </div>
+      <div class="bal-sub" id="gasSub">—</div>
+      <div class="gauge gas">
+        <div class="track">
+          <div class="marker" id="gasGaugeMarker" style="left:0%"></div>
+        </div>
+        <div class="legend">
+          <span>预警 &lt; <b id="gasThWarn">15</b> 元</span>
+          <span>不足 &lt; <b id="gasThCritical">0</b> 元</span>
+          <span>充足</span>
+        </div>
+      </div>
+      <div class="chips">
+        <span class="chip bad" id="gasChipAuth">⚠️ 燃气 token 可能已失效（GAS_TOKEN）</span>
+        <span class="chip warn" id="gasChipLow">⏳ 燃气余额低于提醒阈值</span>
+      </div>
+    </div>
+    <div class="stats">
+      <div class="stat"><span class="k">户号</span><span class="v" id="gasSubsCode">—</span></div>
+      <div class="stat"><span class="k">表读数</span><span class="v" id="gasMeter">—</span></div>
+      <div class="stat"><span class="k">上次查询</span><span class="v" id="gasLastQuery">—</span></div>
+      <div class="stat"><span class="k">提醒阈值</span><span class="v" id="gasWarn">—</span></div>
+    </div>
+  </section>
+
+  <!-- 电费趋势 -->
   <section class="card chart-card">
     <div class="chart-head">
-      <h2>近 24 小时电量趋势</h2>
+      <h2>电费 · 近 24 小时趋势</h2>
       <span class="hint">数据来自每 10 分钟的保活查询</span>
     </div>
     <div class="chart-box">
@@ -164,8 +203,20 @@
     </div>
   </section>
 
+  <!-- 燃气趋势 -->
+  <section class="card chart-card" id="gasChartCard" style="display:none">
+    <div class="chart-head">
+      <h2>燃气 · 近 24 小时趋势</h2>
+      <span class="hint">数据来自保活任务</span>
+    </div>
+    <div class="chart-box">
+      <canvas id="gasChart"></canvas>
+      <div class="chart-empty" id="gasChartEmpty">数据不足</div>
+    </div>
+  </section>
+
   <footer>
-    数据由 <b>keep_alive 保活任务</b> 自动刷新 · 点击「立即刷新」会实时查询网关（不触发推送）<br>
+    数据由 <b>keep_alive 保活任务</b> 自动刷新 · 点击「立即刷新」实时查询电费+燃气（不触发推送）<br>
     state 文件：<b>state.json</b> · 服务：<b>web/server.py</b>
   </footer>
 </div>
@@ -176,9 +227,9 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
 const REFRESH_POLL_MS = 30000;
-const EXPIRE_HINT_MS = 32 * 60 * 1000; // 上次查询超过 32 分钟提示可能过期
+const EXPIRE_HINT_MS = 32 * 60 * 1000;
 
-let state = { loading: true };
+let state = {};
 
 function fmtNum(v, digits = 2) {
   if (v === null || v === undefined || Number.isNaN(Number(v))) return "--";
@@ -194,8 +245,7 @@ function fmtTime(iso) {
   if (diff >= 0 && diff < 60) return `刚刚 (${abs})`;
   if (diff >= 60 && diff < 3600) return `${Math.floor(diff / 60)} 分钟前 (${abs})`;
   if (diff >= 3600 && diff < 86400) return `${Math.floor(diff / 3600)} 小时前 (${abs})`;
-  const md = `${d.getMonth() + 1}/${d.getDate()} ${abs}`;
-  return md;
+  return `${d.getMonth() + 1}/${d.getDate()} ${abs}`;
 }
 function toast(msg, type = "") {
   const t = $("toast");
@@ -204,37 +254,24 @@ function toast(msg, type = "") {
   clearTimeout(toast._t);
   toast._t = setTimeout(() => t.classList.remove("show"), 4200);
 }
-
-function setLevel(level) {
-  const pill = $("levelPill");
-  const map = {
-    ok: ["充足", "ok"],
-    low: ["偏低", "low"],
-    critical: ["告急", "bad"],
-    unknown: ["未知", "unk"],
-  };
+function setPill(el, level) {
+  const map = { ok: ["充足", "ok"], low: ["偏低", "low"], critical: ["告急", "bad"], unknown: ["未知", "unk"] };
   const [txt, cls] = map[level] || ["未知", "unk"];
-  pill.textContent = txt;
-  pill.className = "pill " + cls;
+  el.textContent = txt; el.className = "pill " + cls;
 }
-
 function todayUsage(history) {
   if (!Array.isArray(history) || history.length < 2) return null;
   const today = new Date(); today.setHours(0, 0, 0, 0);
-  const pts = history
-    .map((p) => ({ t: new Date(p.t), bal: Number(p.bal) }))
+  const pts = history.map((p) => ({ t: new Date(p.t), bal: Number(p.bal) }))
     .filter((p) => !Number.isNaN(p.t.getTime()) && !Number.isNaN(p.bal));
   const todays = pts.filter((p) => p.t >= today);
   if (todays.length < 2) return null;
   todays.sort((a, b) => a.t - b.t);
-  const used = Math.max(0, todays[0].bal - todays[todays.length - 1].bal);
-  return used;
+  return Math.max(0, todays[0].bal - todays[todays.length - 1].bal);
 }
-
 function estDays(history, balance) {
   if (!Array.isArray(history) || history.length < 2 || !balance) return null;
-  const pts = history
-    .map((p) => ({ t: new Date(p.t), bal: Number(p.bal) }))
+  const pts = history.map((p) => ({ t: new Date(p.t), bal: Number(p.bal) }))
     .filter((p) => !Number.isNaN(p.t.getTime()) && !Number.isNaN(p.bal))
     .sort((a, b) => a.t - b.t);
   if (pts.length < 2) return null;
@@ -243,52 +280,69 @@ function estDays(history, balance) {
   if (hours < 0.5) return null;
   const drop = first.bal - last.bal;
   if (drop <= 0) return null;
-  const ratePerDay = drop / (hours / 24);
-  const days = balance / ratePerDay;
-  if (!Number.isFinite(days)) return null;
-  return days;
+  const days = balance / (drop / (hours / 24));
+  return Number.isFinite(days) ? days : null;
 }
 
 function render(d) {
   state = d;
   $("roomLabel").textContent = (d.room || "目标宿舍") + " · 电控电表预存";
   $("balanceNum").textContent = fmtNum(d.balance);
-  setLevel(d.level || "unknown");
+  setPill($("levelPill"), d.level);
 
   const warn = Number(d.warn_threshold ?? 20);
   const crit = Number(d.critical_threshold ?? 5);
   $("thCritical").textContent = crit;
   $("thWarn").textContent = warn;
   $("thWarn2").textContent = warn;
-
   const barMax = Math.max(warn * 3, 60);
   const bal = Number(d.balance ?? 0);
-  const pct = Math.max(0, Math.min(100, (bal / barMax) * 100));
-  $("gaugeMarker").style.left = pct + "%";
+  $("gaugeMarker").style.left = Math.max(0, Math.min(100, (bal / barMax) * 100)) + "%";
   $("balanceSub").textContent = bal > barMax
     ? "远超预警线（安全区）"
     : `距预警线（${warn} 度）还有 ${fmtNum(Math.max(0, bal - warn))} 度`;
 
   $("lastQuery").textContent = fmtTime(d.last_query_time);
   const used = todayUsage(d.history);
-  $("todayUsage").innerHTML = used === null
-    ? "—"
-    : `${fmtNum(used, 1)} <small>度</small>`;
+  $("todayUsage").innerHTML = used === null ? "—" : `${fmtNum(used, 1)} <small>度</small>`;
   const days = estDays(d.history, bal);
-  $("estDays").innerHTML = days === null
-    ? "—"
-    : `约 ${days < 1 ? "不足 1" : Math.round(days)} <small>天</small>`;
+  $("estDays").innerHTML = days === null ? "—" : `约 ${days < 1 ? "不足 1" : Math.round(days)} <small>天</small>`;
 
-  // 过期提示
   const last = d.last_query_time ? new Date(d.last_query_time) : null;
   const expire = last && !Number.isNaN(last.getTime()) && (Date.now() - last.getTime() > EXPIRE_HINT_MS || d.level === "unknown");
   $("chipExpire").style.display = expire ? "inline-flex" : "none";
   const authRecent = d.last_auth_error_at && new Date(d.last_auth_error_at).getTime() > Date.now() - 3600000;
   $("chipAuth").style.display = authRecent ? "inline-flex" : "none";
 
+  // 燃气
+  const gasOn = !!d.gas_enabled;
+  $("gasCard").style.display = gasOn ? "" : "none";
+  $("gasChartCard").style.display = gasOn ? "" : "none";
+  if (gasOn) {
+    const gbal = Number(d.gas_balance ?? NaN);
+    $("gasBalanceNum").textContent = Number.isNaN(gbal) ? "--" : fmtNum(gbal);
+    setPill($("gasLevelPill"), d.gas_level || "unknown");
+    const gw = Number(d.gas_warn_threshold ?? 15);
+    $("gasThWarn").textContent = gw;
+    $("gasThCritical").textContent = 0;
+    $("gasWarn").innerHTML = `&lt; ${gw} 元`;
+    $("gasSubsCode").textContent = d.gas_subs_code || "—";
+    $("gasMeter").textContent = d.gas_meter_reading || "—";
+    $("gasLastQuery").textContent = fmtTime(d.gas_last_query_time);
+    $("gasSub").textContent = Number.isNaN(gbal)
+      ? "暂无燃气数据"
+      : (gbal < gw ? "已低于提醒阈值，请注意充值" : `余额高于提醒阈值（${gw} 元）`);
+    const gaugeMax = Math.max(gw * 3, 45);
+    $("gasGaugeMarker").style.left = Math.max(0, Math.min(100, (gbal / gaugeMax) * 100)) + "%";
+    const gasAuth = d.gas_last_auth_error_at && new Date(d.gas_last_auth_error_at).getTime() > Date.now() - 3600000;
+    $("gasChipAuth").style.display = (gasAuth || d.gas_level === "unknown" && d.gas_error) ? "inline-flex" : "none";
+    $("gasChipLow").style.display = (!Number.isNaN(gbal) && gbal < gw) ? "inline-flex" : "none";
+    drawChart($("gasChart"), $("gasChartEmpty"), d.gas_history, "#fbbf24");
+  }
+
   $("syncInfo").textContent = "上次同步 " + fmtTime(d.server_time || null);
   $("liveDot").className = "dot on";
-  drawChart(d.history);
+  drawChart($("chart"), $("chartEmpty"), d.history, "#22d3ee");
 }
 
 async function fetchStatus() {
@@ -302,26 +356,23 @@ async function fetchStatus() {
   }
 }
 
-function drawChart(history) {
-  const canvas = $("chart");
+function drawChart(canvas, empty, history, color) {
   const box = canvas.parentElement;
-  const empty = $("chartEmpty");
-  const dpr = window.devicePixelRatio || 1;
   const w = box.clientWidth, h = box.clientHeight;
+  if (w < 10 || h < 10) return;
+  const dpr = window.devicePixelRatio || 1;
   canvas.width = w * dpr; canvas.height = h * dpr;
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
 
-  const now = Date.now();
-  const cutoff = now - 24 * 3600 * 1000;
+  const cutoff = Date.now() - 24 * 3600 * 1000;
   const pts = (Array.isArray(history) ? history : [])
     .map((p) => ({ t: new Date(p.t).getTime(), bal: Number(p.bal) }))
     .filter((p) => Number.isFinite(p.t) && Number.isFinite(p.bal) && p.t >= cutoff)
     .sort((a, b) => a.t - b.t);
-
-  if (pts.length < 2) { empty.style.display = "grid"; return; }
-  empty.style.display = "none";
+  if (pts.length < 2) { if (empty) empty.style.display = "grid"; return; }
+  if (empty) empty.style.display = "none";
 
   const padL = 44, padR = 16, padT = 14, padB = 26;
   const iw = w - padL - padR, ih = h - padT - padB;
@@ -333,11 +384,8 @@ function drawChart(history) {
   const X = (t) => padL + ((t - t0) / (t1 - t0)) * iw;
   const Y = (v) => padT + ih - ((v - vLo) / (vHi - vLo)) * ih;
 
-  // 网格
-  ctx.strokeStyle = "rgba(255,255,255,.06)";
-  ctx.lineWidth = 1;
-  ctx.font = "11px ui-sans-serif, system-ui";
-  ctx.fillStyle = "rgba(139,152,173,.85)";
+  ctx.strokeStyle = "rgba(255,255,255,.06)"; ctx.lineWidth = 1;
+  ctx.font = "11px ui-sans-serif, system-ui"; ctx.fillStyle = "rgba(139,152,173,.85)";
   for (let i = 0; i <= 3; i++) {
     const y = padT + (ih / 3) * i;
     ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
@@ -345,29 +393,24 @@ function drawChart(history) {
     ctx.fillText(val.toFixed(1), 4, y + 4);
   }
 
-  // 面积渐变
   const grad = ctx.createLinearGradient(0, padT, 0, padT + ih);
-  grad.addColorStop(0, "rgba(34,211,238,.35)");
-  grad.addColorStop(1, "rgba(34,211,238,.02)");
+  grad.addColorStop(0, color + "55");
+  grad.addColorStop(1, color + "05");
   ctx.beginPath();
   pts.forEach((p, i) => (i === 0 ? ctx.moveTo(X(p.t), Y(p.bal)) : ctx.lineTo(X(p.t), Y(p.bal))));
   ctx.lineTo(X(pts[pts.length - 1].t), padT + ih);
   ctx.lineTo(X(pts[0].t), padT + ih);
-  ctx.closePath();
-  ctx.fillStyle = grad; ctx.fill();
+  ctx.closePath(); ctx.fillStyle = grad; ctx.fill();
 
-  // 折线
   ctx.beginPath();
   pts.forEach((p, i) => (i === 0 ? ctx.moveTo(X(p.t), Y(p.bal)) : ctx.lineTo(X(p.t), Y(p.bal))));
-  ctx.strokeStyle = "#22d3ee"; ctx.lineWidth = 2.2; ctx.lineJoin = "round"; ctx.stroke();
+  ctx.strokeStyle = color; ctx.lineWidth = 2.2; ctx.lineJoin = "round"; ctx.stroke();
 
-  // 末端点
   const lastP = pts[pts.length - 1];
   ctx.beginPath(); ctx.arc(X(lastP.t), Y(lastP.bal), 3.6, 0, Math.PI * 2);
-  ctx.fillStyle = "#7dd3fc"; ctx.fill();
-  ctx.strokeStyle = "rgba(125,211,252,.3)"; ctx.lineWidth = 6; ctx.stroke();
+  ctx.fillStyle = color; ctx.fill();
+  ctx.strokeStyle = color + "44"; ctx.lineWidth = 6; ctx.stroke();
 
-  // 时间轴
   const fmtT = (t) => { const d = new Date(t); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
   ctx.fillStyle = "rgba(139,152,173,.85)";
   ctx.fillText(fmtT(t0), padL, h - 6);
@@ -376,35 +419,39 @@ function drawChart(history) {
 
 async function doRefresh() {
   const btn = $("refreshBtn");
-  btn.disabled = true;
-  btn.classList.add("loading");
+  btn.disabled = true; btn.classList.add("loading");
   try {
     const res = await fetch("/api/query", { method: "POST", cache: "no-store" });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
       const err = body.error || "unknown";
       const msg = body.message || ("HTTP " + res.status);
-      if (err === "auth") toast("会话已失效：" + msg, "err");
-      else toast("查询失败：" + msg, "err");
+      if (err === "auth") toast("电费会话已失效：" + msg, "err");
+      else toast("刷新失败：" + msg, "err");
       return;
     }
     render(body);
-    toast("刷新成功：剩余 " + fmtNum(body.balance) + " 度", "ok");
+    const parts = [];
+    if (body.balance != null) parts.push(`电费 ${fmtNum(body.balance)} 度`);
+    if (body.gas_balance != null) parts.push(`燃气 ${fmtNum(body.gas_balance)} 元`);
+    toast("刷新成功：" + parts.join(" · "), "ok");
+    if (body.gas_error) toast("燃气刷新失败：" + (body.gas_error.message || body.gas_error.error), "err");
   } catch (err) {
     toast("请求失败：" + err.message, "err");
   } finally {
-    btn.disabled = false;
-    btn.classList.remove("loading");
+    btn.disabled = false; btn.classList.remove("loading");
   }
 }
 
 function tickClock() {
-  const now = new Date();
-  $("clock").textContent = now.toLocaleTimeString("zh-CN", { hour12: false });
+  $("clock").textContent = new Date().toLocaleTimeString("zh-CN", { hour12: false });
 }
 
 $("refreshBtn").addEventListener("click", doRefresh);
-window.addEventListener("resize", () => { if (state.history) drawChart(state.history); });
+window.addEventListener("resize", () => {
+  if (state.history) drawChart($("chart"), $("chartEmpty"), state.history, "#22d3ee");
+  if (state.gas_enabled) drawChart($("gasChart"), $("gasChartEmpty"), state.gas_history, "#fbbf24");
+});
 
 tickClock(); setInterval(tickClock, 1000);
 fetchStatus(); setInterval(fetchStatus, REFRESH_POLL_MS);

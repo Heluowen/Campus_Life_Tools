@@ -213,12 +213,14 @@ def query_balance(
     """发送 YJF004 查询并解析余额。
 
     - 网络异常 / 超时 / 5xx：按 max_retries 重试（最多 2 次）；
-    - 401/403、登录页 HTML、业务提示登录失效：立即抛 AuthExpiredError，不重试；
+    - 401/403、登录页 HTML、业务提示登录失效：抛 AuthExpiredError；
     - 其余解析失败：抛 QueryError，不重试。
 
-    cookie_store_path：可选，保存/加载服务端轮换后的会话 Cookie。
-    服务端每次响应会 Set-Cookie 更新 CCBIBS1 / IN001；本函数在请求后把
-    Client 的 Cookie 罐持久化到该文件，下次查询优先使用它（覆盖 .env 中的旧值）。
+    Cookie 策略：
+    1. 优先使用轮换持久化文件（cookies.json）中较新的会话 Cookie 覆盖 .env 旧值；
+    2. 若本次请求被判定登录失效，而持久化文件与 .env 的 Cookie 不同（说明用户
+       重新抓包更新了 .env），自动回退用 .env 的新 Cookie 重试一次，成功后重建
+       持久化文件。这样「重新抓包」和「轮换文件」可以共存。
     """
     gateway = _gateway_url(api)
     headers = _build_headers(api)
@@ -226,28 +228,36 @@ def query_balance(
     attempts = 1 + max(0, min(int(max_retries), 2))
     last_error: QueryError | None = None
 
-    # Cookie 初始值：.env 中的 Cookie，被轮换持久化文件（如有）覆盖
-    cookies = _parse_cookie_str(api.cookie)
+    env_cookies = _parse_cookie_str(api.cookie)
     store = _load_cookie_store(cookie_store_path)
+    merged_cookies = dict(env_cookies)
     if store:
-        cookies.update(store)
+        merged_cookies.update(store)
 
-    # 同一个 Client 全程复用，自动维护服务端下发的 CCBIBS1 / IN001 等 Cookie
-    with httpx.Client(timeout=timeout, follow_redirects=True, trust_env=trust_env, cookies=cookies) as client:
-        for attempt in range(attempts):
-            try:
-                resp = client.post(gateway, headers=headers, data=form)
-            except httpx.TimeoutException:
-                last_error = QueryError(f"请求超时（>{timeout:g} 秒）")
-            except httpx.HTTPError as exc:
-                last_error = QueryError(f"网络请求失败：{exc}")
-            else:
-                _save_cookie_store(cookie_store_path, client.cookies)
-                if resp.status_code >= 500:
-                    last_error = QueryError(f"服务端错误 HTTP {resp.status_code}")
+    def _do_query(query_cookies: dict) -> QueryResult:
+        inner_error: QueryError | None = None
+        with httpx.Client(timeout=timeout, follow_redirects=True, trust_env=trust_env, cookies=query_cookies) as client:
+            for attempt in range(attempts):
+                try:
+                    resp = client.post(gateway, headers=headers, data=form)
+                except httpx.TimeoutException:
+                    inner_error = QueryError(f"请求超时（>{timeout:g} 秒）")
+                except httpx.HTTPError as exc:
+                    inner_error = QueryError(f"网络请求失败：{exc}")
                 else:
-                    return _parse_response(resp)
-            if attempt < attempts - 1:
-                time.sleep(_RETRY_DELAY)
+                    _save_cookie_store(cookie_store_path, client.cookies)
+                    if resp.status_code >= 500:
+                        inner_error = QueryError(f"服务端错误 HTTP {resp.status_code}")
+                    else:
+                        return _parse_response(resp)
+                if attempt < attempts - 1:
+                    time.sleep(_RETRY_DELAY)
+        raise inner_error or QueryError("查询失败（未知原因）")
 
-    raise last_error or QueryError("查询失败（未知原因）")
+    try:
+        return _do_query(merged_cookies)
+    except AuthExpiredError:
+        if store and env_cookies != merged_cookies:
+            # 持久化 Cookie 失效但 .env 有新值（用户重新抓包过）：用 .env 重试
+            return _do_query(dict(env_cookies))
+        raise

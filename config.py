@@ -98,6 +98,17 @@ class PushSettings:
 
 
 @dataclass(frozen=True)
+class GasSettings:
+    """燃气（港华 vcc-cbs）配置；subsid 与 token 都存在时启用。"""
+
+    enabled: bool
+    subsid: str = ""
+    token: str = ""
+    cookie: str = ""
+    warn_threshold: float = 15.0
+
+
+@dataclass(frozen=True)
 class RuntimeSettings:
     request_timeout: float
     max_retries: int
@@ -111,6 +122,7 @@ class Settings:
     alert: AlertSettings
     push: PushSettings
     runtime: RuntimeSettings
+    gas: GasSettings
 
 
 def _validate_push(push: PushSettings) -> None:
@@ -184,4 +196,16 @@ def load_settings() -> Settings:
         trust_env=_bool("TRUST_ENV", True),
     )
 
-    return Settings(api=api, alert=alert, push=push, runtime=runtime)
+    gas_subsid = _raw("GAS_SUBSID")
+    gas_token = _raw("GAS_TOKEN")
+    gas = GasSettings(
+        enabled=bool(gas_subsid and gas_token),
+        subsid=gas_subsid,
+        token=gas_token,
+        cookie=_raw("GAS_COOKIE"),
+        warn_threshold=_float("GAS_WARN_THRESHOLD", 15.0),
+    )
+    if gas.enabled and gas.warn_threshold <= 0:
+        raise ConfigError("GAS_WARN_THRESHOLD 必须大于 0")
+
+    return Settings(api=api, alert=alert, push=push, runtime=runtime, gas=gas)
