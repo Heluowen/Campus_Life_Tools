@@ -1,7 +1,9 @@
 @echo off
-echo 正在停止电费面板与保活守护进程...
-taskkill /FI "WINDOWTITLE eq 电费面板*" /T /F >nul 2>&1
-taskkill /FI "WINDOWTITLE eq 保活守护*" /T /F >nul 2>&1
-if exist keepalive.lock del /f /q keepalive.lock >nul 2>&1
+echo 正在停止面板与保活...
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":8877" ^| findstr "LISTENING"') do taskkill /PID %%p /F >nul 2>&1
+if exist "%~dp0keepalive.lock" (
+    for /f "delims=" %%x in (%~dp0keepalive.lock) do taskkill /PID %%x /F >nul 2>&1
+    del /f /q "%~dp0keepalive.lock" >nul 2>&1
+)
 echo 完成。
 if not defined NO_PAUSE pause

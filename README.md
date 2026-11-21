@@ -68,7 +68,7 @@ python main.py                # 正式运行
 
 - `start.bat` 会先检测 8877 端口，已在运行则跳过面板启动
 - 保活守护为单实例（`keepalive.lock`），与计划任务并存时自动互斥，不会重复查询
-- 两个子进程各自在最小化窗口运行，关闭启动窗口不影响后台；要停止用 `stop.bat`
+- 两个子进程都用 `pythonw.exe` 启动：**后台运行、完全不显示控制台窗口**；停止用 `stop.bat`（按端口与锁 PID 精确结束）
 
 ## 本地网页面板
 
@@ -134,18 +134,20 @@ python web/server.py --port 8877
 python keep_alive.py --interval 600
 # 试运行 8 小时后退出（测试）
 python keep_alive.py --max-hours 8
-# 静默单次（计划任务/批处理用：隐藏控制台并自动关闭窗口）
-python keep_alive.py --once --hide-console --log-file keepalive.log
+# 静默单次（无窗口运行：用 pythonw 解释器，不弹任何控制台）
+pythonw keep_alive.py --once --log-file keepalive.log
 ```
 
 **风险提示**：144 次/天可能触发接口风控；间隔低于 60s 会被强制为 60s。
 电脑休眠/断网/重启后会话仍会失效，需重新抓包更新 `.env`（`main.py` 会推送提醒）。
 
-**Windows 计划任务（登录自启，隐藏窗口）**：用 `--hide-console` 让每次 tick 的黑框自动隐藏并在结束后关闭：
+**Windows 计划任务（每 10 分钟，无黑窗）**：计划任务直接调用 `pythonw.exe`，不经过 `cmd`，因此不会有任何控制台窗口闪烁或停留：
 
 ```powershell
-schtasks /Create /TN "ElecKeepAlive" /SC MINUTE /MO 10 /RL LIMITED /TR "cmd /c cd /d H:\Deepseek-Harness\Zone_2\campus-elec-monitor && python keep_alive.py --once --hide-console --log-file keepalive.log" /F
+schtasks /Create /TN "ElecKeepAlive" /SC MINUTE /MO 10 /RL LIMITED /F /TR "\"H:\AstrBot\backend\python\pythonw.exe\" \"H:\Deepseek-Harness\Zone_2\campus-elec-monitor\keep_alive.py\" --once --log-file \"H:\Deepseek-Harness\Zone_2\campus-elec-monitor\keepalive.log\""
 ```
+
+> 如果坚持用 `cmd/bat` 方式启动，可给 `keep_alive.py` 加 `--hide-console` 参数（隐藏并自动关闭控制台窗口），但不经 cmd 直接调用 pythonw 是最彻底的无窗口方案。
 
 删除任务：`schtasks /Delete /TN "ElecKeepAlive" /F`
 
