@@ -50,3 +50,20 @@ python -c "from query_gas import query_gas; print(query_gas('<subsId>', '<token>
 1. token 真实有效期（保活间隔 10 分钟下能存活多久）；
 2. token 过期时的错误表现（用于分类 GasAuthExpiredError）；
 3. 若 token 很短（<30 分钟），与电费一样需要配合保活。
+
+
+## 5. Token 自动刷新（vcc-oauth）
+
+H5 前端（`/h5-gas/js/app.js`、`vendors.js`）暴露的刷新逻辑：
+
+| 接口 | 用途 |
+|---|---|
+| `GET /vcc-oauth/oauth/authorize2/union?clientid=<ch>&token=<ticket>` | 登录票据换 `access_token + refresh_token`（前端 `exchangeToken`） |
+| `GET /vcc-oauth/oauth/authorize2/refreshToken?clientid=<ch>&token=<refresh_token>` | 刷新 access_token（前端 `refreshToken`，token 过期时自动调用） |
+| `POST /vcc-oauth/oauth/authorize2/accessToekn?authCode=<code>` | 微信授权 code 换初始 token |
+
+- `clientid`（channel）= `pe92a8wechat11301DY0105`（东永港华）
+- access_token 有效期约 2 小时；refresh_token 有效期通常更长
+- 本项目 `query_gas.py` 已支持：token 过期（20001）时自动调 refreshToken 换新 token 并写回 `.env`；
+  需要 `.env` 里配置 `GAS_REFRESH_TOKEN` + `GAS_CLIENTID`（从完整登录/刷新抓包中获取）
+- refresh 失败（如 refresh_token 也过期）→ 抛 GasAuthExpiredError，提示重新抓包

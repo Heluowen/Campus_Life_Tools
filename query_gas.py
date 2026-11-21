@@ -15,6 +15,7 @@ from dataclasses import dataclass
 import httpx
 
 GAS_HOST = "https://weixin.towngasvcc.com"
+GAS_OAUTH = "https://weixin.towngasvcc.com/vcc-oauth"
 
 _RETRY_DELAY = 2.0
 
@@ -87,6 +88,29 @@ def _parse_gas(resp: httpx.Response) -> GasResult:
     )
 
 
+def _refresh_access_token(clientid: str, refresh_token: str, timeout: float, trust_env: bool) -> str | None:
+    """用 vcc-oauth refreshToken 接口换取新 access_token；失败返回 None。
+
+    接口：GET /vcc-oauth/oauth/authorize2/refreshToken?clientid=<channel>&token=<refresh_token>
+    """
+    if not (clientid and refresh_token):
+        return None
+    url = f"{GAS_OAUTH}/oauth/authorize2/refreshToken"
+    try:
+        with httpx.Client(timeout=timeout, trust_env=trust_env, follow_redirects=False) as c:
+            r = c.get(url, params={"clientid": clientid, "token": refresh_token})
+        data = r.json()
+    except Exception:  # noqa: BLE001 - 刷新尽力而为，失败交给上层提示重新抓包
+        return None
+    for path in (("access_token",), ("data", "access_token"), ("datas", "access_token")):
+        cur = data
+        for key in path:
+            cur = cur.get(key) if isinstance(cur, dict) else None
+        if isinstance(cur, str) and cur:
+            return cur
+    return None
+
+
 def query_gas(
     subsid: str,
     token: str,
@@ -94,26 +118,47 @@ def query_gas(
     max_retries: int = 2,
     trust_env: bool = True,
     cookie: str = "",
+    refresh_token: str = "",
+    clientid: str = "",
+    on_token_refreshed=None,
 ) -> GasResult:
-    """查询燃气余额（元）。鉴权失效立即抛 GasAuthExpiredError。"""
+    """查询燃气余额（元）。
+
+    token 过期（20001）时：若配置了 refresh_token + clientid，先调 vcc-oauth
+    refreshToken 换新 token（回调 on_token_refreshed 持久化到 .env），再重试一次；
+    刷新失败则抛 GasAuthExpiredError 提示重新抓包。
+    """
     url = f"{GAS_HOST}/nv1/vcc-cbs/charge/preCheck?subsId={subsid}"
-    headers = {"Authorization": f"Bearer {token}", "Accept": "*/*"}
-    if cookie:
-        headers["Cookie"] = cookie
     attempts = 1 + max(0, min(int(max_retries), 2))
-    last_error: GasQueryError | None = None
 
-    with httpx.Client(timeout=timeout, follow_redirects=True, trust_env=trust_env) as client:
-        for attempt in range(attempts):
+    def _call(tok: str) -> GasResult:
+        headers = {"Authorization": f"Bearer {tok}", "Accept": "*/*"}
+        if cookie:
+            headers["Cookie"] = cookie
+        last_error: GasQueryError | None = None
+        with httpx.Client(timeout=timeout, follow_redirects=True, trust_env=trust_env) as client:
+            for attempt in range(attempts):
+                try:
+                    resp = client.get(url, headers=headers)
+                except httpx.TimeoutException:
+                    last_error = GasQueryError("燃气查询超时")
+                except httpx.HTTPError as exc:
+                    last_error = GasQueryError(f"燃气查询网络失败：{exc}")
+                else:
+                    return _parse_gas(resp)
+                if attempt < attempts - 1:
+                    time.sleep(_RETRY_DELAY)
+        raise last_error or GasQueryError("燃气查询失败（未知原因）")
+
+    try:
+        return _call(token)
+    except GasAuthExpiredError:
+        new_token = _refresh_access_token(clientid, refresh_token, timeout, trust_env)
+        if not new_token:
+            raise
+        if on_token_refreshed is not None:
             try:
-                resp = client.get(url, headers=headers)
-            except httpx.TimeoutException:
-                last_error = GasQueryError("燃气查询超时")
-            except httpx.HTTPError as exc:
-                last_error = GasQueryError(f"燃气查询网络失败：{exc}")
-            else:
-                return _parse_gas(resp)
-            if attempt < attempts - 1:
-                time.sleep(_RETRY_DELAY)
-
-    raise last_error or GasQueryError("燃气查询失败（未知原因）")
+                on_token_refreshed(new_token)
+            except Exception:  # noqa: BLE001
+                pass
+        return _call(new_token)

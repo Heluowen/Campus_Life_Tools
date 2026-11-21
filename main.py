@@ -21,7 +21,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from config import ConfigError, Settings, load_settings
+from config import ConfigError, Settings, load_settings, update_env
 from notifier import NotifyError, send_notification
 from query_elec import AuthExpiredError, QueryError, QueryResult, query_balance
 from query_gas import GasAuthExpiredError, GasQueryError, GasResult, query_gas
@@ -246,6 +246,9 @@ def _run_gas(settings: Settings, dry_run: bool = False) -> int:
             settings.runtime.max_retries,
             settings.runtime.trust_env,
             gas.cookie,
+            refresh_token=gas.refresh_token,
+            clientid=gas.clientid,
+            on_token_refreshed=lambda tok: update_env("GAS_TOKEN", tok),
         )
     except GasAuthExpiredError as exc:
         print(f"[GAS-AUTH-EXPIRED] {_fmt_time(now)} {exc}")

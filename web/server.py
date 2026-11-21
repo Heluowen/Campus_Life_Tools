@@ -22,7 +22,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 sys.path.insert(0, str(BASE))
 
 import main as m  # noqa: E402
-from config import ConfigError, load_settings  # noqa: E402
+from config import ConfigError, load_settings, update_env  # noqa: E402
 from query_elec import AuthExpiredError, QueryError, query_balance  # noqa: E402
 from query_gas import GasAuthExpiredError, GasQueryError, query_gas  # noqa: E402
 
@@ -97,6 +97,9 @@ def _apply_gas(settings, state: dict, now) -> dict | None:
             settings.runtime.max_retries,
             settings.runtime.trust_env,
             settings.gas.cookie,
+            refresh_token=settings.gas.refresh_token,
+            clientid=settings.gas.clientid,
+            on_token_refreshed=lambda tok: update_env("GAS_TOKEN", tok),
         )
         state.pop("gas_last_error", None)
         state["gas_balance"] = round(gas.balance, 2)

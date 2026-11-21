@@ -111,6 +111,31 @@ class GasSettings:
     token: str = ""
     cookie: str = ""
     warn_threshold: float = 15.0
+    refresh_token: str = ""  # vcc-oauth refresh_token（可自动续期 access_token）
+    clientid: str = ""  # vcc-oauth channel（如 pe92a8wechat11301DY0105）
+
+
+def update_env(key: str, value: str) -> None:
+    """更新项目 .env 中的某个键（存在则替换，不存在则追加）。"""
+    from pathlib import Path as _Path
+
+    env_path = _Path(__file__).resolve().parent / ".env"
+    try:
+        text = env_path.read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    lines = text.splitlines()
+    out = []
+    replaced = False
+    for line in lines:
+        if line.startswith(key + "="):
+            out.append(f"{key}={value}")
+            replaced = True
+        else:
+            out.append(line)
+    if not replaced:
+        out.append(f"{key}={value}")
+    env_path.write_text("\n".join(out).rstrip("\n") + "\n", encoding="utf-8")
 
 
 @dataclass(frozen=True)
@@ -217,6 +242,8 @@ def load_settings() -> Settings:
         token=gas_token,
         cookie=_raw("GAS_COOKIE"),
         warn_threshold=_float("GAS_WARN_THRESHOLD", 15.0),
+        refresh_token=_raw("GAS_REFRESH_TOKEN"),
+        clientid=_raw("GAS_CLIENTID"),
     )
     if gas.enabled and gas.warn_threshold <= 0:
         raise ConfigError("GAS_WARN_THRESHOLD 必须大于 0")
