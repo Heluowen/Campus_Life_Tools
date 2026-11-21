@@ -466,17 +466,55 @@ function chartHistory(id) {
   return id === "gasChart" ? (state.gas_history || []) : (state.history || []);
 }
 
-function renderChart(id) {
+const chartGeo = {}; // id -> {pts, X, Y, values, isBar, unit, bucketMs, ...} 供悬停交互使用
+
+function _roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function renderChart(id, hoverIdx) {
   const cfg = CHART_CONF[id];
   const canvas = $(id);
   const empty = $(id === "chart" ? "chartEmpty" : "gasChartEmpty");
   const mode = localStorage.getItem("chartMode_" + id) || "line";
   const buckets = bucketize(chartHistory(id), cfg.bucketMs, cfg.windowMs);
-  drawChart(canvas, empty, buckets, { ...cfg, mode });
+  drawChart(canvas, empty, buckets, { ...cfg, mode, id, hover: hoverIdx });
+}
+
+/** 趋势图悬停/点击：显示鼠标位置最近的采样点 XY 数值 */
+function bindChartHover(id) {
+  const canvas = $(id);
+  if (!canvas || canvas.dataset.hoverBound) return;
+  canvas.dataset.hoverBound = "1";
+  canvas.style.cursor = "crosshair";
+  const pick = (ev) => {
+    const geo = chartGeo[id];
+    if (!geo || geo.pts.length < 2) return;
+    const x = ev.offsetX;
+    let best = 0, bestD = Infinity;
+    geo.pts.forEach((p, i) => {
+      const d = Math.abs(geo.X(p.t) - x);
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    renderChart(id, best);
+  };
+  canvas.addEventListener("mousemove", pick);
+  canvas.addEventListener("click", pick);
+  canvas.addEventListener("mouseleave", () => renderChart(id));
 }
 
 function drawChart(canvas, empty, pts, opts) {
-  const { color, bucketMs, yPad, unit, mode } = opts;
+  const { color, bucketMs, yPad, unit, mode, id, hover } = opts;
   const box = canvas.parentElement;
   const w = box.clientWidth, h = box.clientHeight;
   if (w < 10 || h < 10) return;
@@ -574,6 +612,40 @@ function drawChart(canvas, empty, pts, opts) {
   ctx.fillStyle = "rgba(139,152,173,.85)";
   ctx.fillText(fmtT(t0), padL, h - 6);
   ctx.fillText(fmtT(t1), w - padR - 60, h - 6);
+
+  // 记录几何信息供悬停交互，并绘制十字线 + 数值标签
+  chartGeo[id] = { pts, X, Y, values, isBar, unit, bucketMs, t0, t1 };
+  if (hover != null && hover >= 0 && hover < pts.length) {
+    const hp = pts[hover];
+    const hv = isBar ? hp.consumption : hp.last;
+    const px = X(hp.t), py = Y(hv);
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,255,255,.35)";
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(px, padT); ctx.lineTo(px, padT + ih); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(padL, py); ctx.lineTo(w - padR, py); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "rgba(10,15,30,.85)";
+    ctx.fillRect(px - 1.5, padT, 3, ih);
+    ctx.beginPath(); ctx.arc(px, py, 4.5, 0, Math.PI * 2);
+    ctx.fillStyle = color; ctx.fill();
+    ctx.strokeStyle = "#0a0f1e"; ctx.lineWidth = 1.5; ctx.stroke();
+
+    const label = `${fmtT(hp.t)} · ${isBar ? "消耗 " : ""}${hv.toFixed(2)} ${unit}`;
+    ctx.font = "12px ui-sans-serif, system-ui";
+    const tw = ctx.measureText(label).width;
+    let bx = px + 12;
+    if (bx + tw + 16 > w - padR) bx = Math.max(padL, px - tw - 24);
+    let by = py - 32;
+    if (by < padT + 2) by = py + 12;
+    _roundRect(ctx, bx, by, tw + 16, 22, 7);
+    ctx.fillStyle = "rgba(20,30,48,.95)";
+    ctx.strokeStyle = "rgba(255,255,255,.3)";
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#e6edf7";
+    ctx.fillText(label, bx + 8, by + 15);
+    ctx.restore();
+  }
 }
 
 // 趋势图模式切换（余量曲线 / 消耗柱状，选择持久化在 localStorage）
@@ -648,6 +720,8 @@ function tickClock() {
 
 $("refreshBtn").addEventListener("click", doRefresh);
 $("gasRefreshBtn").addEventListener("click", gasRefresh);
+bindChartHover("chart");
+bindChartHover("gasChart");
 window.addEventListener("resize", () => {
   renderChart("chart");
   if (state.gas_enabled) renderChart("gasChart");
