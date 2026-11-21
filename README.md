@@ -79,10 +79,11 @@ python web/server.py --port 8877
 浏览器打开 **http://127.0.0.1:8877** 即可查看：
 
 - **电费**：剩余电量大数字 + 状态标签（充足 / 偏低 / 告急）、阈值刻度条（告急 <5 / 预警 <20 可调）
+- **电费单价折算**：卡片内可直接输入单价（元/度，或 `.env` 的 `ELEC_PRICE`），实时显示「剩余约 ¥xx」
 - **燃气**：气费余额大数字（元）+ 状态标签 + 阈值刻度条（低于 15 元提醒，可调）+ 户号/表读数
 - 上次查询时间、今日消耗、按趋势估算的预计可用天数
-- 近 24 小时趋势图（电费青色 / 燃气琥珀色，数据来自保活任务，每 10 分钟一个点）
-- 「立即刷新」按钮：实时查询电费+燃气一次（不触发推送；保活任务仍负责告警）
+- **趋势图按统计周期聚合**：电费近 24 小时按小时统计（青色）；燃气近 7 天按 12 小时统计（琥珀色）
+- 「立即刷新」按钮：电费卡实时查电费+燃气；燃气卡有独立刷新按钮
 - 页面每 30 秒自动同步一次；超过 32 分钟无更新会提示「可能已过期」
 
 服务只监听 `127.0.0.1`，不暴露到局域网。Ctrl+C 停止。
@@ -96,6 +97,7 @@ python web/server.py --port 8877
 | 请求体 `roomid` | `CCB_ROOMID` | 固化后的房间号，如 `134-33--250-501` |
 | 请求头 `Cookie` | `CCB_COOKIE` | 完整 Cookie 串（可留空，失败时补全） |
 | — | `CCB_ROOM_NAME` | 推送展示名（可选，如 `40栋-501`） |
+| — | `ELEC_PRICE` | 电费单价（元/度，用于折算剩余金额；0 或不填表示不折算） |
 | — | `WARN_THRESHOLD` / `CRITICAL_THRESHOLD` | 电费两级阈值，单位与 `meterflag` 一致（如度） |
 | 燃气 `preCheck` 的 `subsId` 参数 | `GAS_SUBSID` | 燃气户号内部 ID（填了它和 TOKEN 才启用燃气查询） |
 | 燃气请求头 `Authorization: Bearer x` | `GAS_TOKEN` | 微信 OAuth token（失效后需重新抓包） |
@@ -130,15 +132,17 @@ python web/server.py --port 8877
 python keep_alive.py --interval 600
 # 试运行 8 小时后退出（测试）
 python keep_alive.py --max-hours 8
+# 静默单次（计划任务/批处理用：隐藏控制台并自动关闭窗口）
+python keep_alive.py --once --hide-console --log-file keepalive.log
 ```
 
 **风险提示**：144 次/天可能触发接口风控；间隔低于 60s 会被强制为 60s。
 电脑休眠/断网/重启后会话仍会失效，需重新抓包更新 `.env`（`main.py` 会推送提醒）。
 
-**Windows 计划任务（登录自启，隐藏窗口）**：
+**Windows 计划任务（登录自启，隐藏窗口）**：用 `--hide-console` 让每次 tick 的黑框自动隐藏并在结束后关闭：
 
 ```powershell
-schtasks /Create /TN "ElecKeepAlive" /SC ONLOGON /RL LIMITED /TR "cmd /c cd /d H:\Deepseek-Harness\Zone_2\campus-elec-monitor && python keep_alive.py --interval 600 >> keepalive.log 2>&1" /F
+schtasks /Create /TN "ElecKeepAlive" /SC MINUTE /MO 10 /RL LIMITED /TR "cmd /c cd /d H:\Deepseek-Harness\Zone_2\campus-elec-monitor && python keep_alive.py --once --hide-console --log-file keepalive.log" /F
 ```
 
 删除任务：`schtasks /Delete /TN "ElecKeepAlive" /F`

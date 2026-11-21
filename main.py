@@ -113,7 +113,10 @@ def _alert_message(level: str, result: QueryResult, settings: Settings, now: dat
     else:
         title = "宿舍电量余额不足"
         threshold_line = f"提醒阈值：< {settings.alert.warn_threshold:g}"
-    content = f"宿舍：{room}\n剩余：{balance_text}\n{threshold_line}\n查询时间：{_fmt_time(now)}"
+    content = f"宿舍：{room}\n剩余：{balance_text}"
+    if settings.api.has_price:
+        content += f"\n剩余价值：约 ¥{result.balance * settings.api.price:.2f}（单价 {settings.api.price:g} 元/度）"
+    content += f"\n{threshold_line}\n查询时间：{_fmt_time(now)}"
     return title, content
 
 

@@ -75,10 +75,15 @@ class ApiSettings:
     room_name: str = ""
     user_agent: str = ""
     gateway_url: str = ""
+    price: float = 0.0  # 电费单价（元/度），>0 时用于折算剩余金额
 
     @property
     def display_room(self) -> str:
         return self.room_name or "目标宿舍"
+
+    @property
+    def has_price(self) -> bool:
+        return self.price > 0
 
 
 @dataclass(frozen=True)
@@ -151,6 +156,7 @@ def load_settings() -> Settings:
         room_name=_raw("CCB_ROOM_NAME"),
         user_agent=_raw("CCB_USER_AGENT"),
         gateway_url=_raw("CCB_GATEWAY_URL"),
+        price=_float("ELEC_PRICE", 0.0),
     )
 
     if not api.userid:
@@ -159,6 +165,8 @@ def load_settings() -> Settings:
         raise ConfigError("缺少 CCB_SKEY：请在 .env 中填写当前会话校验密钥（抓包请求体 SKEY）")
     if not api.room_id:
         raise ConfigError("缺少 CCB_ROOMID：请在 .env 中填写固化后的宿舍房间号（如 134-33--250-501）")
+    if api.price < 0:
+        raise ConfigError("ELEC_PRICE 不能为负数（0 表示不启用金额折算）")
 
     alert = AlertSettings(
         warn_threshold=_float("WARN_THRESHOLD", 20.0),

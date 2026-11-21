@@ -13,6 +13,7 @@
     python keep_alive.py                  # 每 10 分钟一次，无限循环
     python keep_alive.py --interval 900   # 每 15 分钟一次
     python keep_alive.py --max-hours 8    # 运行 8 小时后退出（测试用）
+    python keep_alive.py --once --hide-console   # 计划任务用：静默跑一轮并自动关闭窗口
 
 Windows 计划任务（登录自启）见 README「保活模式」章节。
 """
@@ -31,6 +32,40 @@ import main as m
 BASE_DIR = Path(__file__).resolve().parent
 LOCK_FILE = BASE_DIR / "keepalive.lock"
 LOG_FILE: Path | None = None
+
+
+def _get_console_hwnd() -> int:
+    """返回当前进程附着的控制台窗口句柄（无窗口/非 Windows 返回 0）。"""
+    try:
+        import ctypes
+
+        return int(ctypes.windll.kernel32.GetConsoleWindow() or 0)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _hide_console() -> None:
+    """隐藏当前控制台窗口（计划任务运行时不弹黑框）。"""
+    hwnd = _get_console_hwnd()
+    if hwnd:
+        try:
+            import ctypes
+
+            ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _close_console() -> None:
+    """关闭当前控制台窗口（仅 --hide-console 模式使用，防止残留窗口）。"""
+    hwnd = _get_console_hwnd()
+    if hwnd:
+        try:
+            import ctypes
+
+            ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _log(msg: str) -> None:
@@ -75,9 +110,16 @@ def main() -> int:
     parser.add_argument("--max-hours", type=float, default=0, help="运行多少小时后退出（0=无限，测试用小数）")
     parser.add_argument("--once", action="store_true", help="只执行一次后退出（测试/手动巡检用）")
     parser.add_argument("--log-file", default="", help="把日志追加写入该文件（计划任务无窗口运行时使用）")
+    parser.add_argument(
+        "--hide-console",
+        action="store_true",
+        help="静默模式：隐藏并自动关闭当前控制台窗口（计划任务/计划程序调用时使用）",
+    )
     args = parser.parse_args()
     if args.log_file:
         LOG_FILE = Path(args.log_file)
+    if args.hide_console:
+        _hide_console()
 
     if args.interval < 60:
         _log("间隔过短（<60s），已按 60s 执行")
@@ -128,6 +170,8 @@ def main() -> int:
         _log("收到 Ctrl+C，退出")
     finally:
         _release_lock()
+        if args.hide_console:
+            _close_console()  # 计划任务场景：窗口用完自动关掉，不留黑框
     return 0
 
 

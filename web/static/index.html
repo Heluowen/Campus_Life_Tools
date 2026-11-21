@@ -69,6 +69,9 @@
   .stat .k{font-size:12.5px;color:var(--muted)}
   .stat .v{font-size:14px;font-weight:600;font-variant-numeric:tabular-nums}
   .stat .v small{font-size:11.5px;color:var(--faint);font-weight:400}
+  .price-input{width:64px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.16);border-radius:8px;
+    color:var(--text);padding:3px 8px;font-size:13px;text-align:right;outline:none;font-variant-numeric:tabular-nums}
+  .price-input:focus{border-color:rgba(34,211,238,.6);box-shadow:0 0 0 2px rgba(34,211,238,.15)}
 
   .btn{appearance:none;border:0;border-radius:14px;padding:12px 18px;font-size:14px;font-weight:650;cursor:pointer;color:#06222b;
     background:linear-gradient(135deg,#67e8f9,#22d3ee 55%,#38bdf8);transition:transform .12s ease, box-shadow .2s ease, filter .2s;
@@ -135,6 +138,7 @@
         <span class="unit">度</span>
       </div>
       <div class="bal-sub" id="balanceSub">数据加载中…</div>
+      <div class="bal-sub" id="elecYuan" style="display:none"></div>
       <div class="gauge">
         <div class="track">
           <div class="marker" id="gaugeMarker" style="left:0%"></div>
@@ -154,6 +158,7 @@
       <div class="stat"><span class="k">上次查询</span><span class="v" id="lastQuery">—</span></div>
       <div class="stat"><span class="k">今日消耗</span><span class="v" id="todayUsage">—</span></div>
       <div class="stat"><span class="k">预计可用</span><span class="v" id="estDays">—</span></div>
+      <div class="stat"><span class="k">电费单价</span><span class="v"><input class="price-input" id="priceInput" type="number" step="0.01" min="0" placeholder="元/度">&nbsp;元/度</span></div>
       <button class="btn" id="refreshBtn" type="button"><span class="spin"></span>立即刷新</button>
     </div>
   </section>
@@ -198,23 +203,23 @@
   <section class="card chart-card">
     <div class="chart-head">
       <h2>电费 · 近 24 小时趋势</h2>
-      <span class="hint">数据来自每 10 分钟的保活查询</span>
+      <span class="hint">按小时统计（来自保活数据）</span>
     </div>
     <div class="chart-box">
       <canvas id="chart"></canvas>
-      <div class="chart-empty" id="chartEmpty">数据不足：保活任务每 10 分钟记录一次，攒够两个点后显示趋势</div>
+      <div class="chart-empty" id="chartEmpty">数据不足：按小时统计，攒够两个统计点后显示</div>
     </div>
   </section>
 
   <!-- 燃气趋势 -->
   <section class="card chart-card" id="gasChartCard" style="display:none">
     <div class="chart-head">
-      <h2>燃气 · 近 24 小时趋势</h2>
-      <span class="hint">数据来自保活任务</span>
+      <h2>燃气 · 近 7 天趋势</h2>
+      <span class="hint">每 12 小时统计（来自保活数据）</span>
     </div>
     <div class="chart-box">
       <canvas id="gasChart"></canvas>
-      <div class="chart-empty" id="gasChartEmpty">数据不足</div>
+      <div class="chart-empty" id="gasChartEmpty">数据不足：每 12 小时统计，攒够两个统计点后显示</div>
     </div>
   </section>
 
@@ -311,6 +316,10 @@ function render(d) {
   const days = estDays(d.history, bal);
   $("estDays").innerHTML = days === null ? "—" : `约 ${days < 1 ? "不足 1" : Math.round(days)} <small>天</small>`;
 
+  // 电费单价折算剩余金额（单价来自 .env 的 ELEC_PRICE，也可在页面输入框临时改）
+  priceInput_serverPrice = Number(d.price ?? 0);
+  renderElecYuan(bal);
+
   const last = d.last_query_time ? new Date(d.last_query_time) : null;
   const expire = last && !Number.isNaN(last.getTime()) && (Date.now() - last.getTime() > EXPIRE_HINT_MS || d.level === "unknown");
   $("chipExpire").style.display = expire ? "inline-flex" : "none";
@@ -340,13 +349,45 @@ function render(d) {
     const gasAuth = d.gas_last_auth_error_at && new Date(d.gas_last_auth_error_at).getTime() > Date.now() - 3600000;
     $("gasChipAuth").style.display = (gasAuth || d.gas_level === "unknown" && d.gas_error) ? "inline-flex" : "none";
     $("gasChipLow").style.display = (!Number.isNaN(gbal) && gbal < gw) ? "inline-flex" : "none";
-    drawChart($("gasChart"), $("gasChartEmpty"), d.gas_history, "#fbbf24");
+    drawChart($("gasChart"), $("gasChartEmpty"), d.gas_history, "#fbbf24", 12 * 3600 * 1000, 7 * 24 * 3600 * 1000);
   }
 
   $("syncInfo").textContent = "上次同步 " + fmtTime(d.server_time || null);
   $("liveDot").className = "dot on";
-  drawChart($("chart"), $("chartEmpty"), d.history, "#22d3ee");
+  drawChart($("chart"), $("chartEmpty"), d.history, "#22d3ee", 3600 * 1000, 24 * 3600 * 1000);
 }
+
+let priceInitDone = false;
+
+function renderElecYuan(balance) {
+  const input = $("priceInput");
+  const yEl = $("elecYuan");
+  // 首次渲染时用服务端配置的单价填充输入框
+  if (!priceInitDone) {
+    const serverPrice = Number(priceInput_serverPrice);
+    if (serverPrice > 0 && !input.value) input.value = String(serverPrice);
+    const saved = parseFloat(localStorage.getItem("elecPrice") || "");
+    if (!input.value && Number.isFinite(saved) && saved > 0) input.value = String(saved);
+    priceInitDone = true;
+  }
+  const p = parseFloat(input.value);
+  const b = Number(balance);
+  if (Number.isFinite(p) && p > 0 && Number.isFinite(b)) {
+    yEl.style.display = "";
+    yEl.textContent = `≈ ¥${(b * p).toFixed(2)}（单价 ${p} 元/度）`;
+  } else {
+    yEl.style.display = "none";
+  }
+}
+
+// 由 fetch 渲染时更新（服务端 ELEC_PRICE）
+let priceInput_serverPrice = 0;
+
+$("priceInput").addEventListener("input", () => {
+  const p = parseFloat($("priceInput").value);
+  if (Number.isFinite(p) && p > 0) localStorage.setItem("elecPrice", String(p));
+  renderElecYuan(Number(state.balance ?? NaN));
+});
 
 async function fetchStatus() {
   try {
@@ -359,7 +400,7 @@ async function fetchStatus() {
   }
 }
 
-function drawChart(canvas, empty, history, color) {
+function drawChart(canvas, empty, history, color, bucketMs, windowMs) {
   const box = canvas.parentElement;
   const w = box.clientWidth, h = box.clientHeight;
   if (w < 10 || h < 10) return;
@@ -369,17 +410,25 @@ function drawChart(canvas, empty, history, color) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
 
-  const cutoff = Date.now() - 24 * 3600 * 1000;
-  const pts = (Array.isArray(history) ? history : [])
+  const cutoff = Date.now() - windowMs;
+  const raw = (Array.isArray(history) ? history : [])
     .map((p) => ({ t: new Date(p.t).getTime(), bal: Number(p.bal) }))
     .filter((p) => Number.isFinite(p.t) && Number.isFinite(p.bal) && p.t >= cutoff)
     .sort((a, b) => a.t - b.t);
+
+  // 按统计周期分桶：每个桶取桶内最后一个点（代表该时段末余额）
+  const buckets = new Map();
+  for (const p of raw) {
+    const key = Math.floor(p.t / bucketMs);
+    buckets.set(key, p);
+  }
+  const pts = [...buckets.values()].sort((a, b) => a.t - b.t);
   if (pts.length < 2) { if (empty) empty.style.display = "grid"; return; }
   if (empty) empty.style.display = "none";
 
   const padL = 44, padR = 16, padT = 14, padB = 26;
   const iw = w - padL - padR, ih = h - padT - padB;
-  const t0 = pts[0].t, t1 = Math.max(pts[pts.length - 1].t, t0 + 3600000);
+  const t0 = pts[0].t, t1 = Math.max(pts[pts.length - 1].t, t0 + bucketMs);
   const vMin = Math.min(...pts.map((p) => p.bal));
   const vMax = Math.max(...pts.map((p) => p.bal));
   const span = Math.max(vMax - vMin, 0.5);
@@ -414,10 +463,17 @@ function drawChart(canvas, empty, history, color) {
   ctx.fillStyle = color; ctx.fill();
   ctx.strokeStyle = color + "44"; ctx.lineWidth = 6; ctx.stroke();
 
-  const fmtT = (t) => { const d = new Date(t); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+  // 时间轴标签：小时级显示 HH:MM，12 小时级显示 M/D HH
+  const fmtT = (t) => {
+    const d = new Date(t);
+    if (bucketMs < 6 * 3600 * 1000) {
+      return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    }
+    return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:00`;
+  };
   ctx.fillStyle = "rgba(139,152,173,.85)";
   ctx.fillText(fmtT(t0), padL, h - 6);
-  ctx.fillText(fmtT(t1), w - padR - 34, h - 6);
+  ctx.fillText(fmtT(t1), w - padR - 60, h - 6);
 }
 
 async function doRefresh() {
@@ -479,8 +535,8 @@ function tickClock() {
 $("refreshBtn").addEventListener("click", doRefresh);
 $("gasRefreshBtn").addEventListener("click", gasRefresh);
 window.addEventListener("resize", () => {
-  if (state.history) drawChart($("chart"), $("chartEmpty"), state.history, "#22d3ee");
-  if (state.gas_enabled) drawChart($("gasChart"), $("gasChartEmpty"), state.gas_history, "#fbbf24");
+  if (state.history) drawChart($("chart"), $("chartEmpty"), state.history, "#22d3ee", 3600 * 1000, 24 * 3600 * 1000);
+  if (state.gas_enabled) drawChart($("gasChart"), $("gasChartEmpty"), state.gas_history, "#fbbf24", 12 * 3600 * 1000, 7 * 24 * 3600 * 1000);
 });
 
 tickClock(); setInterval(tickClock, 1000);

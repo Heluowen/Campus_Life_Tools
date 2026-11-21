@@ -38,8 +38,11 @@ def _load_state() -> dict:
 def _status_payload() -> dict:
     settings = load_settings()
     state = _load_state()
+    price = settings.api.price
+    bal = state.get("last_balance")
+    balance_yuan = round(bal * price, 2) if price > 0 and isinstance(bal, (int, float)) else None
     return {
-        "balance": state.get("last_balance"),
+        "balance": bal,
         "unit": "度",
         "level": state.get("last_level") or "unknown",
         "warn_threshold": settings.alert.warn_threshold,
@@ -47,6 +50,8 @@ def _status_payload() -> dict:
         "last_query_time": state.get("last_query_time"),
         "last_auth_error_at": state.get("last_auth_error_at"),
         "room": settings.api.display_room,
+        "price": price,
+        "balance_yuan": balance_yuan,
         "history": state.get("history") or [],
         "gas_enabled": settings.gas.enabled,
         "gas_balance": state.get("gas_balance"),
@@ -218,11 +223,21 @@ class Handler(BaseHTTPRequestHandler):
         print(f"[web] {self.address_string()} {fmt % args}", flush=True)
 
 
+class _PanelServer(ThreadingHTTPServer):
+    # Windows 下 SO_REUSEADDR 会让两个进程同时绑同一端口（双实例互相抢请求），
+    # 这里禁用它，保证端口独占；同名进程重复启动会直接报错退出。
+    allow_reuse_address = False
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="本地电费面板 Web 服务")
     parser.add_argument("--port", type=int, default=8877, help="监听端口（默认 8877）")
     args = parser.parse_args(argv)
-    httpd = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    try:
+        httpd = _PanelServer(("127.0.0.1", args.port), Handler)
+    except OSError as exc:
+        print(f"[ERROR] 端口 {args.port} 被占用（可能已有面板在运行）：{exc}")
+        return 1
     print(f"电费面板已启动：http://127.0.0.1:{args.port}")
     print("页面每 30 秒自动同步；「立即刷新」会实时查询网关。Ctrl+C 退出。")
     try:
