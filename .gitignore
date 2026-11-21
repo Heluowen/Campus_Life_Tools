@@ -10,6 +10,15 @@ keepalive.lock
 keepalive.log
 ttl_log.txt
 
+# è®¡åˆ’ä»»åŠ¡å¯åŠ¨è„šæœ¬ï¼ˆæœ¬æœºä¸“ç”¨ï¼‰
+start_keepalive.bat
+
+# æŠ“åŒ…åˆ†æäº§ç‰©ï¼ˆå«ä¸ªäººæ•°æ®ï¼Œä¸å…¥åº“ï¼‰
+tools/h5/
+tools/dump_full.txt
+tools/dump_*.txt
+tools/transactions.json
+
 # Python
 __pycache__/
 *.py[cod]
@@ -17,10 +26,3 @@ __pycache__/
 venv/
 .pytest_cache/
 *.tmp
-
-# ÏÂÔØµÄ H5 ¾²Ì¬×ÊÔ´£¨Ìå»ı´ó£¬²»Èë¿â£©
-tools/h5/
-# ×¥°ü·ÖÎö²úÎï£¨º¬¸öÈËÊı¾İ£¬²»Èë¿â£©
-tools/dump_full.txt
-tools/dump_*.txt
-tools/transactions.json

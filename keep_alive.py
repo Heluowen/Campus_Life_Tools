@@ -30,10 +30,18 @@ import main as m
 
 BASE_DIR = Path(__file__).resolve().parent
 LOCK_FILE = BASE_DIR / "keepalive.lock"
+LOG_FILE: Path | None = None
 
 
 def _log(msg: str) -> None:
-    print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}", flush=True)
+    line = f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}"
+    print(line, flush=True)
+    if LOG_FILE is not None:
+        try:
+            with open(LOG_FILE, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        except OSError:
+            pass
 
 
 def _acquire_lock() -> bool:
@@ -61,11 +69,15 @@ def _release_lock() -> None:
 
 
 def main() -> int:
+    global LOG_FILE
     parser = argparse.ArgumentParser(description="电费监控会话保活守护进程")
     parser.add_argument("--interval", type=int, default=600, help="保活间隔秒数（默认 600）")
     parser.add_argument("--max-hours", type=float, default=0, help="运行多少小时后退出（0=无限，测试用小数）")
     parser.add_argument("--once", action="store_true", help="只执行一次后退出（测试/手动巡检用）")
+    parser.add_argument("--log-file", default="", help="把日志追加写入该文件（计划任务无窗口运行时使用）")
     args = parser.parse_args()
+    if args.log_file:
+        LOG_FILE = Path(args.log_file)
 
     if args.interval < 60:
         _log("间隔过短（<60s），已按 60s 执行")
