@@ -53,10 +53,15 @@ def _parse_gas(resp: httpx.Response) -> GasResult:
 
     result_code = str(payload.get("resultCode", "")).strip()
     if result_code not in ("0", "00"):
-        msg = str(payload.get("errorMsg") or payload.get("errorTitle") or result_code)
+        msg = str(
+            payload.get("errorMsg")
+            or payload.get("errorTitle")
+            or payload.get("resultMsg")
+            or result_code
+        )
         lowered = (result_code + " " + msg).lower()
-        if any(k in lowered for k in ("token", "登录", "授权", "oauth", "401", "403")):
-            raise GasAuthExpiredError(f"resultCode={result_code!r}，msg={msg!r}（疑似 token 失效）")
+        if any(k in lowered for k in ("token", "过期", "登录", "授权", "oauth", "401", "403")):
+            raise GasAuthExpiredError(f"resultCode={result_code!r}，msg={msg!r}（GAS_TOKEN 已失效，需重新抓包）")
         raise GasQueryError(f"接口返回失败：resultCode={result_code!r}，msg={msg!r}")
 
     data = payload.get("datas")
