@@ -38,6 +38,7 @@ EXIT_QUERY_FAILED = 4
 
 AUTH_ALERT_COOLDOWN = timedelta(hours=1)   # 登录失效提醒冷却（保活模式下防刷屏）
 ERROR_ALERT_COOLDOWN = timedelta(hours=1)  # 查询失败提醒冷却
+HISTORY_MAX = 500  # state.json 中保留的历史查询点数（Web 趋势图用）
 
 
 def _maybe_invalidate_cookie_store() -> None:
@@ -222,6 +223,12 @@ def run_once(settings: Settings, dry_run: bool = False) -> int:
         state["last_balance"] = round(result.balance, 2)
         state["last_query_time"] = now.isoformat()
         state["last_level"] = level
+        # 历史记录（Web 面板趋势图数据），保留最近 500 条
+        hist = state.get("history")
+        if not isinstance(hist, list):
+            hist = []
+        hist.append({"t": now.isoformat(timespec="seconds"), "bal": round(result.balance, 2)})
+        state["history"] = hist[-HISTORY_MAX:]
         if notify and (push_ok or settings.push.channel == "none"):
             state["last_alert_date"] = today
             state["last_notified_level"] = level

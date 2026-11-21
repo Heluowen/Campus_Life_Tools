@@ -27,6 +27,10 @@ campus-elec-monitor/
 ├── cookies.json      # 会话 Cookie 轮换持久化（自动生成，gitignore）
 ├── main.py           # 主入口：查询 → 阈值判断 → 防骚扰 → 推送
 ├── keep_alive.py     # 会话保活守护进程（高频折中方案）
+├── web/
+│   ├── server.py     # 本地网页面板服务（仅 127.0.0.1）
+│   └── static/
+│       └── index.html # 自包含前端页面（无外部依赖）
 └── tools/
     ├── chls_dump.py  # Charles .chls（Java 序列化）解析器
     ├── extract.py    # 抓包 → 结构化事务提取
@@ -44,6 +48,23 @@ Copy-Item .env.example .env   # 然后编辑 .env
 python main.py --dry-run      # 联调：只查询与判断，不推送、不写状态
 python main.py                # 正式运行
 ```
+
+## 本地网页面板
+
+```powershell
+python web/server.py --port 8877
+```
+
+浏览器打开 **http://127.0.0.1:8877** 即可查看：
+
+- 剩余电量大数字 + 状态标签（充足 / 偏低 / 告急）
+- 阈值刻度条（告急 <5 / 预警 <20 可按 `.env` 调整）
+- 上次查询时间、今日消耗、按趋势估算的预计可用天数
+- 近 24 小时电量趋势图（数据来自保活任务，每 10 分钟一个点）
+- 「立即刷新」按钮：实时查询一次（不触发推送；保活任务仍负责告警）
+- 页面每 30 秒自动同步一次；会话超过 32 分钟无更新会提示「可能已过期」
+
+服务只监听 `127.0.0.1`，不暴露到局域网。Ctrl+C 停止。
 
 ## `.env` 填写清单（抓包 → 配置映射）
 
