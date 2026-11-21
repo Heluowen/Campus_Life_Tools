@@ -88,27 +88,50 @@ def _parse_gas(resp: httpx.Response) -> GasResult:
     )
 
 
-def _refresh_access_token(clientid: str, refresh_token: str, timeout: float, trust_env: bool) -> str | None:
-    """用 vcc-oauth refreshToken 接口换取新 access_token；失败返回 None。
+def _sign_params(params: dict) -> str:
+    """vcc-oauth / vcc-cbs 请求签名：md5(按 key 排序拼接 "key+value"(排除 sign/空值) + "hbasesoft.com-prod").upper()"""
+    import hashlib
 
-    接口：GET /vcc-oauth/oauth/authorize2/refreshToken?clientid=<channel>&token=<refresh_token>
+    parts = []
+    for k in sorted(params.keys()):
+        v = params[k]
+        if k == "sign" or v is None or v == "":
+            continue
+        parts.append(f"{k}{v}")
+    return hashlib.md5(("".join(parts) + "hbasesoft.com-prod").encode()).hexdigest().upper()
+
+
+def _refresh_tokens(
+    clientid: str, refresh_token: str, timeout: float, trust_env: bool
+) -> tuple[str, str] | None:
+    """用 vcc-oauth refreshToken 接口换取新的 (access_token, refresh_token)。
+
+    实测正确姿势（2026-11-22 验证）：
+    POST /vcc-oauth/oauth/authorize2/refreshToken?clientid=<ch>&timestamp=<ms>&sign=<md5>
+    表单参数：refreshToken=<refresh_token>
+    响应：{"access_token":..., "refresh_token":..., "expires_in":7200}（会轮换 refresh_token！）
     """
+    import time
+
     if not (clientid and refresh_token):
         return None
     url = f"{GAS_OAUTH}/oauth/authorize2/refreshToken"
+    ts = str(int(time.time() * 1000))
+    params = {"clientid": clientid, "timestamp": ts}
+    params["sign"] = _sign_params(params)
     try:
         with httpx.Client(timeout=timeout, trust_env=trust_env, follow_redirects=False) as c:
-            r = c.get(url, params={"clientid": clientid, "token": refresh_token})
+            r = c.post(url, params=params, data={"refreshToken": refresh_token})
         data = r.json()
     except Exception:  # noqa: BLE001 - 刷新尽力而为，失败交给上层提示重新抓包
         return None
-    for path in (("access_token",), ("data", "access_token"), ("datas", "access_token")):
-        cur = data
-        for key in path:
-            cur = cur.get(key) if isinstance(cur, dict) else None
-        if isinstance(cur, str) and cur:
-            return cur
-    return None
+    if not isinstance(data, dict):
+        return None
+    access = data.get("access_token") or (data.get("data") or {}).get("access_token")
+    refresh = data.get("refresh_token") or (data.get("data") or {}).get("refresh_token")
+    if not access:
+        return None
+    return str(access), str(refresh or refresh_token)
 
 
 def query_gas(
@@ -125,8 +148,8 @@ def query_gas(
     """查询燃气余额（元）。
 
     token 过期（20001）时：若配置了 refresh_token + clientid，先调 vcc-oauth
-    refreshToken 换新 token（回调 on_token_refreshed 持久化到 .env），再重试一次；
-    刷新失败则抛 GasAuthExpiredError 提示重新抓包。
+    refreshToken 换新 token 对（回调 on_token_refreshed(access, refresh) 持久化
+    到 .env），再重试一次；刷新失败则抛 GasAuthExpiredError 提示重新抓包。
     """
     url = f"{GAS_HOST}/nv1/vcc-cbs/charge/preCheck?subsId={subsid}"
     attempts = 1 + max(0, min(int(max_retries), 2))
@@ -153,12 +176,13 @@ def query_gas(
     try:
         return _call(token)
     except GasAuthExpiredError:
-        new_token = _refresh_access_token(clientid, refresh_token, timeout, trust_env)
-        if not new_token:
+        pair = _refresh_tokens(clientid, refresh_token, timeout, trust_env)
+        if not pair:
             raise
+        new_access, new_refresh = pair
         if on_token_refreshed is not None:
             try:
-                on_token_refreshed(new_token)
+                on_token_refreshed(new_access, new_refresh)
             except Exception:  # noqa: BLE001
                 pass
-        return _call(new_token)
+        return _call(new_access)

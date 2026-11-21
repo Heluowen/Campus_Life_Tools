@@ -248,7 +248,7 @@ def _run_gas(settings: Settings, dry_run: bool = False) -> int:
             gas.cookie,
             refresh_token=gas.refresh_token,
             clientid=gas.clientid,
-            on_token_refreshed=lambda tok: update_env("GAS_TOKEN", tok),
+            on_token_refreshed=lambda a, r: (update_env("GAS_TOKEN", a), update_env("GAS_REFRESH_TOKEN", r)),
         )
     except GasAuthExpiredError as exc:
         print(f"[GAS-AUTH-EXPIRED] {_fmt_time(now)} {exc}")

@@ -99,7 +99,7 @@ def _apply_gas(settings, state: dict, now) -> dict | None:
             settings.gas.cookie,
             refresh_token=settings.gas.refresh_token,
             clientid=settings.gas.clientid,
-            on_token_refreshed=lambda tok: update_env("GAS_TOKEN", tok),
+            on_token_refreshed=lambda a, r: (update_env("GAS_TOKEN", a), update_env("GAS_REFRESH_TOKEN", r)),
         )
         state.pop("gas_last_error", None)
         state["gas_balance"] = round(gas.balance, 2)

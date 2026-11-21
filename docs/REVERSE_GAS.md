@@ -67,3 +67,31 @@ H5 前端（`/h5-gas/js/app.js`、`vendors.js`）暴露的刷新逻辑：
 - 本项目 `query_gas.py` 已支持：token 过期（20001）时自动调 refreshToken 换新 token 并写回 `.env`；
   需要 `.env` 里配置 `GAS_REFRESH_TOKEN` + `GAS_CLIENTID`（从完整登录/刷新抓包中获取）
 - refresh 失败（如 refresh_token 也过期）→ 抛 GasAuthExpiredError，提示重新抓包
+
+
+## 6. Token 自动刷新（已实测打通，2026-11-22）
+
+### 登录（首次/过期后由 H5 触发）
+```
+GET  /vcc-oauth/oauth/authorize2/union?clientid=<ch>&redirectUri=<transitionPage>
+     -> 302 oauthLogin?forwardTicket=... (微信内 OAuth)
+GET  /h5-gas/pages/transitionPage/index?code=<code>
+POST /vcc-oauth/oauth/authorize2/accessToekn?authCode=<code>&timestamp=<ms>&sign=<md5>
+  响应: {"access_token":"32hex","refresh_token":"32hex","expires_in":7200}
+```
+
+### 刷新（token 过期时）
+```
+POST /vcc-oauth/oauth/authorize2/refreshToken?clientid=<ch>&timestamp=<ms>&sign=<md5>
+  表单: refreshToken=<refresh_token>
+  响应: {"access_token":"...","refresh_token":"...","expires_in":7200}   # 会轮换 refresh_token！
+```
+
+### 签名算法（vcc-oauth / vcc-cbs 通用）
+`sign = MD5( 按 key 排序拼接 "key+value"（跳过 sign/空值） + "hbasesoft.com-prod" ).upper()`
+（预检 preCheck 不校验 sign，但刷新接口建议带上）
+
+### 工程实现
+- `query_gas.py`：查询遇 `20001` 自动调刷新接口 → 新 token 对通过回调写回 `.env`
+  （`GAS_TOKEN` + `GAS_REFRESH_TOKEN` 同步轮换）→ 重试查询
+- 实测：故意放无效 token → 自动换新 → 查询成功 ✅
