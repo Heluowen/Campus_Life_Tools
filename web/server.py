@@ -120,13 +120,8 @@ def _apply_gas(settings, state: dict, now) -> dict | None:
         return {"error": "gas-query", "message": str(exc)}
 
 
-def _query_once() -> dict:
-    """手动刷新：实时查询电费+燃气并更新状态（不触发推送）。电费失败不影响燃气刷新。"""
-    settings = load_settings()
-    now = m._now(settings)
-    state = _load_state()
-
-    elec_error = None
+def _apply_elec(settings, state: dict, now) -> dict | None:
+    """查询一次电费并写入 state；返回 elec_error（成功时为 None）。"""
     try:
         result = query_balance(
             settings.api,
@@ -144,16 +139,23 @@ def _query_once() -> dict:
             hist = []
         hist.append({"t": now.isoformat(timespec="seconds"), "bal": round(result.balance, 2)})
         state["history"] = hist[-m.HISTORY_MAX:]
+        return None
     except AuthExpiredError as exc:
         state["last_auth_error_at"] = now.isoformat()
-        elec_error = {"error": "auth", "message": str(exc)}
+        return {"error": "auth", "message": str(exc)}
     except QueryError as exc:
         state["last_error"] = {"time": now.isoformat(), "message": str(exc)}
-        elec_error = {"error": "query", "message": str(exc)}
+        return {"error": "query", "message": str(exc)}
 
-    gas_error = None
-    if settings.gas.enabled:
-        gas_error = _apply_gas(settings, state, now)
+
+def _query_once() -> dict:
+    """手动刷新：实时查询电费+燃气并更新状态（不触发推送）。电费失败不影响燃气刷新。"""
+    settings = load_settings()
+    now = m._now(settings)
+    state = _load_state()
+
+    elec_error = _apply_elec(settings, state, now)
+    gas_error = _apply_gas(settings, state, now) if settings.gas.enabled else None
 
     m._save_state(state)
     payload = _status_payload()
@@ -161,6 +163,19 @@ def _query_once() -> dict:
         payload["elec_error"] = elec_error
     if gas_error:
         payload["gas_error"] = gas_error
+    return payload
+
+
+def _query_elec_only() -> dict:
+    """只刷新电费（独立按钮用），不触碰燃气。"""
+    settings = load_settings()
+    now = m._now(settings)
+    state = _load_state()
+    elec_error = _apply_elec(settings, state, now)
+    m._save_state(state)
+    payload = _status_payload()
+    if elec_error:
+        payload["elec_error"] = elec_error
     return payload
 
 
@@ -254,6 +269,13 @@ class Handler(BaseHTTPRequestHandler):
                 return _send_json(self, 200, {"ok": True, "price": price, "message": "单价已保存到 .env"})
             except (ValueError, TypeError) as exc:
                 return _send_json(self, 400, {"error": "bad-request", "message": str(exc)})
+            except Exception as exc:  # noqa: BLE001
+                return _send_json(self, 500, {"error": "internal", "message": str(exc)})
+        if path == "/api/query_elec":
+            try:
+                return _send_json(self, 200, _query_elec_only())
+            except ConfigError as exc:
+                return _send_json(self, 500, {"error": "config", "message": str(exc)})
             except Exception as exc:  # noqa: BLE001
                 return _send_json(self, 500, {"error": "internal", "message": str(exc)})
         return _send_json(self, 404, {"error": "not found"})

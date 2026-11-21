@@ -666,24 +666,20 @@ async function doRefresh() {
   const btn = $("refreshBtn");
   btn.disabled = true; btn.classList.add("loading");
   try {
-    const res = await fetch("/api/query", { method: "POST", cache: "no-store" });
+    const res = await fetch("/api/query_elec", { method: "POST", cache: "no-store" });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
-      toast("刷新失败：" + (body.message || ("HTTP " + res.status)), "err");
+      toast("电费刷新失败：" + (body.message || ("HTTP " + res.status)), "err");
       return;
     }
     render(body);
-    const errs = [];
-    if (body.elec_error) errs.push("电费：" + (body.elec_error.message || body.elec_error.error));
-    if (body.gas_error) errs.push("燃气：" + (body.gas_error.message || body.gas_error.error));
-    if (errs.length) {
-      toast("刷新部分失败 —— " + errs.join("；"), "err");
-    } else {
-      const parts = [];
-      if (body.balance != null) parts.push(`电费 ${fmtNum(body.balance)} 度`);
-      if (body.gas_balance != null) parts.push(`燃气 ${fmtNum(body.gas_balance)} 元`);
-      toast("刷新成功：" + parts.join(" · "), "ok");
+    if (body.elec_error) {
+      toast("电费刷新失败：" + (body.elec_error.message || body.elec_error.error), "err");
+      return;
     }
+    let msg = "电费已刷新：" + fmtNum(body.balance) + " 度";
+    if (body.balance_yuan != null) msg += `（约 ¥${fmtNum(body.balance_yuan)}）`;
+    toast(msg, "ok");
   } catch (err) {
     toast("请求失败：" + err.message, "err");
   } finally {
