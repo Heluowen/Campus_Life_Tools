@@ -334,9 +334,8 @@ function render(d) {
   const days = estDays(d.history, bal);
   $("estDays").innerHTML = days === null ? "—" : `约 ${days < 1 ? "不足 1" : Math.round(days)} <small>天</small>`;
 
-  // 电费单价折算剩余金额（单价来自 .env 的 ELEC_PRICE，也可在页面输入框临时改）
-  priceInput_serverPrice = Number(d.price ?? 0);
-  renderElecYuan(bal);
+  // 电费单价折算剩余金额（单价来自 .env 的 ELEC_PRICE；页面修改会写回 .env）
+  renderElecYuan(bal, d.price);
 
   const last = d.last_query_time ? new Date(d.last_query_time) : null;
   const expire = last && !Number.isNaN(last.getTime()) && (Date.now() - last.getTime() > EXPIRE_HINT_MS || d.level === "unknown");
@@ -375,18 +374,13 @@ function render(d) {
   renderChart("chart");
 }
 
-let priceInitDone = false;
-
-function renderElecYuan(balance) {
+function renderElecYuan(balance, serverPrice) {
   const input = $("priceInput");
   const yEl = $("elecYuan");
-  // 首次渲染时用服务端配置的单价填充输入框
-  if (!priceInitDone) {
-    const serverPrice = Number(priceInput_serverPrice);
-    if (serverPrice > 0 && !input.value) input.value = String(serverPrice);
-    const saved = parseFloat(localStorage.getItem("elecPrice") || "");
-    if (!input.value && Number.isFinite(saved) && saved > 0) input.value = String(saved);
-    priceInitDone = true;
+  // 输入框聚焦时不覆盖用户输入；否则用服务端（.env 中 ELEC_PRICE）的值
+  if (document.activeElement !== input) {
+    const sp = Number(serverPrice ?? state.price ?? 0);
+    input.value = sp > 0 ? String(sp) : "";
   }
   const p = parseFloat(input.value);
   const b = Number(balance);
@@ -398,13 +392,37 @@ function renderElecYuan(balance) {
   }
 }
 
-// 由 fetch 渲染时更新（服务端 ELEC_PRICE）
-let priceInput_serverPrice = 0;
-
+// 单价修改后保存到服务端（写入 .env 的 ELEC_PRICE），带 600ms 防抖
+let priceSaveTimer = null;
+async function savePriceToServer() {
+  const v = parseFloat($("priceInput").value);
+  if (!Number.isFinite(v) || v < 0) return;
+  try {
+    const res = await fetch("/api/price", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ price: v }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast("单价保存失败：" + (body.message || ("HTTP " + res.status)), "err");
+      return;
+    }
+    state.price = body.price;
+    renderElecYuan(Number(state.balance ?? NaN), body.price);
+    toast("单价已保存：" + body.price + " 元/度（已写入 .env）", "ok");
+  } catch (err) {
+    toast("单价保存失败：" + err.message, "err");
+  }
+}
 $("priceInput").addEventListener("input", () => {
-  const p = parseFloat($("priceInput").value);
-  if (Number.isFinite(p) && p > 0) localStorage.setItem("elecPrice", String(p));
   renderElecYuan(Number(state.balance ?? NaN));
+  clearTimeout(priceSaveTimer);
+  priceSaveTimer = setTimeout(savePriceToServer, 600);
+});
+$("priceInput").addEventListener("change", () => {
+  clearTimeout(priceSaveTimer);
+  savePriceToServer();
 });
 
 async function fetchStatus() {

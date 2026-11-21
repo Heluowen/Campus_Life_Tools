@@ -35,6 +35,27 @@ def _load_state() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _set_env_value(key: str, value: str) -> None:
+    """更新 .env 中的某个键（存在则替换，不存在则追加）。"""
+    env_path = m.ENV_FILE
+    try:
+        text = env_path.read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    lines = text.splitlines()
+    replaced = False
+    out = []
+    for line in lines:
+        if line.startswith(key + "="):
+            out.append(f"{key}={value}")
+            replaced = True
+        else:
+            out.append(line)
+    if not replaced:
+        out.append(f"{key}={value}")
+    env_path.write_text("\n".join(out).rstrip("\n") + "\n", encoding="utf-8")
+
+
 def _status_payload() -> dict:
     settings = load_settings()
     state = _load_state()
@@ -215,6 +236,21 @@ class Handler(BaseHTTPRequestHandler):
                 return _send_json(self, 200, _query_gas_only())
             except ConfigError as exc:
                 return _send_json(self, 500, {"error": "config", "message": str(exc)})
+            except Exception as exc:  # noqa: BLE001
+                return _send_json(self, 500, {"error": "internal", "message": str(exc)})
+        if path == "/api/price":
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(length) if length > 0 else b"{}"
+                data = json.loads(raw.decode("utf-8"))
+                price = float(data.get("price"))
+                if not (0 <= price <= 1000):
+                    raise ValueError("单价范围应为 0~1000 元/度")
+                _set_env_value("ELEC_PRICE", f"{price:g}")
+                load_settings()  # 立即重载，确认可解析
+                return _send_json(self, 200, {"ok": True, "price": price, "message": "单价已保存到 .env"})
+            except (ValueError, TypeError) as exc:
+                return _send_json(self, 400, {"error": "bad-request", "message": str(exc)})
             except Exception as exc:  # noqa: BLE001
                 return _send_json(self, 500, {"error": "internal", "message": str(exc)})
         return _send_json(self, 404, {"error": "not found"})
