@@ -137,7 +137,12 @@ def _validate_push(push: PushSettings) -> None:
 
 
 def load_settings() -> Settings:
-    """从 .env / 环境变量加载并校验配置；配置非法时抛 ConfigError。"""
+    """从 .env / 环境变量加载并校验配置；配置非法时抛 ConfigError。
+
+    每次调用都重新读取 .env（override=True），这样用户重新抓包更新凭据后，
+    长驻进程（如网页面板、保活守护）无需重启即可生效。
+    """
+    load_dotenv(override=True)
     api = ApiSettings(
         userid=_raw("CCB_USERID"),
         skey=_raw("CCB_SKEY"),
