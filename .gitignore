@@ -1,0 +1,26 @@
+# çœŸå®å‡­æ®ä¸ç¯å¢ƒï¼ˆç¦æ­¢æäº¤ï¼‰
+.env
+
+# æœ¬åœ°è¿è¡ŒçŠ¶æ€ï¼ˆæ¯æ¬¡è¿è¡Œè‡ªåŠ¨æ›´æ–°ï¼Œä¸å…¥åº“ï¼‰
+state.json
+
+# ä¼šè¯ Cookie è½®æ¢æŒä¹…åŒ– / ä¿æ´»è¿›ç¨‹é”ä¸æ—¥å¿—
+cookies.json
+keepalive.lock
+keepalive.log
+ttl_log.txt
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.tmp
+
+# ÏÂÔØµÄ H5 ¾²Ì¬×ÊÔ´£¨Ìå»ı´ó£¬²»Èë¿â£©
+tools/h5/
+# ×¥°ü·ÖÎö²úÎï£¨º¬¸öÈËÊı¾İ£¬²»Èë¿â£©
+tools/dump_full.txt
+tools/dump_*.txt
+tools/transactions.json
