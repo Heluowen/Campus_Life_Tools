@@ -192,7 +192,7 @@
         </div>
       </div>
       <div class="chips">
-        <span class="chip bad" id="gasChipAuth">⚠️ 燃气 token 可能已失效（GAS_TOKEN）</span>
+        <span class="chip bad" id="gasChipAuth" style="display:none">⚠️ 燃气 token 可能已失效（GAS_TOKEN），请点击右侧刷新或重新抓包</span>
         <span class="chip warn" id="gasChipLow">⏳ 燃气余额低于提醒阈值</span>
       </div>
     </div>
@@ -256,6 +256,7 @@ const REFRESH_POLL_MS = 30000;
 const EXPIRE_HINT_MS = 32 * 60 * 1000;
 
 let state = {};
+let gasAuthHint = false;  // 燃气 token 失效提示：仅在最近一次燃气刷新失败后显示
 
 function fmtNum(v, digits = 2) {
   if (v === null || v === undefined || Number.isNaN(Number(v))) return "--";
@@ -363,8 +364,8 @@ function render(d) {
       : (gbal < gw ? "已低于提醒阈值，请注意充值" : `余额高于提醒阈值（${gw} 元）`);
     const gaugeMax = Math.max(gw * 3, 45);
     $("gasGaugeMarker").style.left = Math.max(0, Math.min(100, (gbal / gaugeMax) * 100)) + "%";
-    const gasAuth = d.gas_last_auth_error_at && new Date(d.gas_last_auth_error_at).getTime() > Date.now() - 3600000;
-    $("gasChipAuth").style.display = (gasAuth || d.gas_level === "unknown" && d.gas_error) ? "inline-flex" : "none";
+    // token 失效提示只在「最近一次燃气刷新失败」后显示（由 gasRefresh 控制），成功刷新后隐藏
+    $("gasChipAuth").style.display = gasAuthHint ? "inline-flex" : "none";
     $("gasChipLow").style.display = (!Number.isNaN(gbal) && gbal < gw) ? "inline-flex" : "none";
     renderChart("gasChart");
   }
@@ -694,16 +695,25 @@ async function gasRefresh() {
     const res = await fetch("/api/query_gas", { method: "POST", cache: "no-store" });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
+      gasAuthHint = false;
+      $("gasChipAuth").style.display = "none";
       toast("燃气刷新失败：" + (body.message || ("HTTP " + res.status)), "err");
       return;
     }
     render(body);
     if (body.gas_error) {
+      // 只有「燃气 token 失效」类错误才点亮 token 提示，其他错误只弹 toast
+      gasAuthHint = body.gas_error.error === "gas-auth";
+      $("gasChipAuth").style.display = gasAuthHint ? "inline-flex" : "none";
       toast("燃气刷新失败：" + (body.gas_error.message || body.gas_error.error), "err");
     } else {
+      gasAuthHint = false;
+      $("gasChipAuth").style.display = "none";
       toast("燃气已刷新：" + fmtNum(body.gas_balance) + " 元", "ok");
     }
   } catch (err) {
+    gasAuthHint = false;
+    $("gasChipAuth").style.display = "none";
     toast("请求失败：" + err.message, "err");
   } finally {
     btn.disabled = false; btn.classList.remove("loading");
