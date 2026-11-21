@@ -87,9 +87,15 @@
   @keyframes rot{to{transform:rotate(360deg)}}
 
   .chart-card{padding:20px 22px 14px}
-  .chart-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+  .chart-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;gap:10px;flex-wrap:wrap}
   .chart-head h2{font-size:15px;font-weight:650}
   .chart-head .hint{font-size:12px;color:var(--faint)}
+  .chart-tools{display:flex;align-items:center;gap:10px}
+  .seg{display:inline-flex;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:2px}
+  .seg button{appearance:none;border:0;background:transparent;color:var(--muted);font-size:12px;padding:4px 10px;border-radius:8px;cursor:pointer;transition:all .15s}
+  .seg button:hover{color:var(--text)}
+  .seg button.on{background:rgba(34,211,238,.16);color:#a5f3fc}
+  .seg[data-chart="gasChart"] button.on{background:rgba(251,191,36,.18);color:#fcd34d}
   .chart-box{position:relative;height:230px}
   canvas{width:100%;height:100%;display:block}
   .chart-empty{position:absolute;inset:0;display:grid;place-items:center;color:var(--faint);font-size:13px;text-align:center;padding:0 30px;line-height:1.7}
@@ -203,7 +209,13 @@
   <section class="card chart-card">
     <div class="chart-head">
       <h2>电费 · 近 24 小时趋势</h2>
-      <span class="hint">按小时统计（来自保活数据）</span>
+      <div class="chart-tools">
+        <span class="hint">按小时统计</span>
+        <span class="seg" data-chart="chart">
+          <button type="button" data-mode="line" class="on">余量曲线</button>
+          <button type="button" data-mode="bar">消耗柱状</button>
+        </span>
+      </div>
     </div>
     <div class="chart-box">
       <canvas id="chart"></canvas>
@@ -215,7 +227,13 @@
   <section class="card chart-card" id="gasChartCard" style="display:none">
     <div class="chart-head">
       <h2>燃气 · 近 7 天趋势</h2>
-      <span class="hint">每 12 小时统计（来自保活数据）</span>
+      <div class="chart-tools">
+        <span class="hint">每 12 小时统计</span>
+        <span class="seg" data-chart="gasChart">
+          <button type="button" data-mode="line" class="on">余量曲线</button>
+          <button type="button" data-mode="bar">消耗柱状</button>
+        </span>
+      </div>
     </div>
     <div class="chart-box">
       <canvas id="gasChart"></canvas>
@@ -349,12 +367,12 @@ function render(d) {
     const gasAuth = d.gas_last_auth_error_at && new Date(d.gas_last_auth_error_at).getTime() > Date.now() - 3600000;
     $("gasChipAuth").style.display = (gasAuth || d.gas_level === "unknown" && d.gas_error) ? "inline-flex" : "none";
     $("gasChipLow").style.display = (!Number.isNaN(gbal) && gbal < gw) ? "inline-flex" : "none";
-    drawChart($("gasChart"), $("gasChartEmpty"), d.gas_history, "#fbbf24", 12 * 3600 * 1000, 7 * 24 * 3600 * 1000);
+    renderChart("gasChart");
   }
 
   $("syncInfo").textContent = "上次同步 " + fmtTime(d.server_time || null);
   $("liveDot").className = "dot on";
-  drawChart($("chart"), $("chartEmpty"), d.history, "#22d3ee", 3600 * 1000, 24 * 3600 * 1000);
+  renderChart("chart");
 }
 
 let priceInitDone = false;
@@ -400,7 +418,47 @@ async function fetchStatus() {
   }
 }
 
-function drawChart(canvas, empty, history, color, bucketMs, windowMs) {
+function bucketize(history, bucketMs, windowMs) {
+  const cutoff = Date.now() - windowMs;
+  const raw = (Array.isArray(history) ? history : [])
+    .map((p) => ({ t: new Date(p.t).getTime(), bal: Number(p.bal) }))
+    .filter((p) => Number.isFinite(p.t) && Number.isFinite(p.bal) && p.t >= cutoff)
+    .sort((a, b) => a.t - b.t);
+  const map = new Map();
+  for (let i = 0; i < raw.length; i++) {
+    const p = raw[i];
+    const key = Math.floor(p.t / bucketMs);
+    const b = map.get(key) || { t: key * bucketMs, first: p.bal, last: p.bal, consumption: 0 };
+    b.last = p.bal;
+    if (i > 0) {
+      const drop = raw[i - 1].bal - p.bal;
+      if (drop > 0) b.consumption += drop;
+    }
+    map.set(key, b);
+  }
+  return [...map.values()].sort((a, b) => a.t - b.t);
+}
+
+const CHART_CONF = {
+  chart: { color: "#22d3ee", bucketMs: 3600 * 1000, windowMs: 24 * 3600 * 1000, yPad: 50, unit: "度" },
+  gasChart: { color: "#fbbf24", bucketMs: 12 * 3600 * 1000, windowMs: 7 * 24 * 3600 * 1000, yPad: 5, unit: "元" },
+};
+
+function chartHistory(id) {
+  return id === "gasChart" ? (state.gas_history || []) : (state.history || []);
+}
+
+function renderChart(id) {
+  const cfg = CHART_CONF[id];
+  const canvas = $(id);
+  const empty = $(id === "chart" ? "chartEmpty" : "gasChartEmpty");
+  const mode = localStorage.getItem("chartMode_" + id) || "line";
+  const buckets = bucketize(chartHistory(id), cfg.bucketMs, cfg.windowMs);
+  drawChart(canvas, empty, buckets, { ...cfg, mode });
+}
+
+function drawChart(canvas, empty, pts, opts) {
+  const { color, bucketMs, yPad, unit, mode } = opts;
   const box = canvas.parentElement;
   const w = box.clientWidth, h = box.clientHeight;
   if (w < 10 || h < 10) return;
@@ -409,59 +467,83 @@ function drawChart(canvas, empty, history, color, bucketMs, windowMs) {
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
-
-  const cutoff = Date.now() - windowMs;
-  const raw = (Array.isArray(history) ? history : [])
-    .map((p) => ({ t: new Date(p.t).getTime(), bal: Number(p.bal) }))
-    .filter((p) => Number.isFinite(p.t) && Number.isFinite(p.bal) && p.t >= cutoff)
-    .sort((a, b) => a.t - b.t);
-
-  // 按统计周期分桶：每个桶取桶内最后一个点（代表该时段末余额）
-  const buckets = new Map();
-  for (const p of raw) {
-    const key = Math.floor(p.t / bucketMs);
-    buckets.set(key, p);
-  }
-  const pts = [...buckets.values()].sort((a, b) => a.t - b.t);
   if (pts.length < 2) { if (empty) empty.style.display = "grid"; return; }
   if (empty) empty.style.display = "none";
+
+  const isBar = mode === "bar";
+  const values = isBar ? pts.map((p) => p.consumption) : pts.map((p) => p.last);
+
+  // Y 轴：曲线图「最高值 + 余量柱」(电费+50 度 / 燃气+5 元)；柱状图以最大消耗量为准
+  let vLo, vHi;
+  if (isBar) {
+    vLo = 0;
+    vHi = Math.max(Math.max(...values) * 1.2, 0.1);
+  } else {
+    const maxRaw = Math.max(...values);
+    const minRaw = Math.min(...values);
+    vLo = Math.max(0, minRaw - yPad);
+    vHi = maxRaw + yPad;
+  }
 
   const padL = 44, padR = 16, padT = 14, padB = 26;
   const iw = w - padL - padR, ih = h - padT - padB;
   const t0 = pts[0].t, t1 = Math.max(pts[pts.length - 1].t, t0 + bucketMs);
-  const vMin = Math.min(...pts.map((p) => p.bal));
-  const vMax = Math.max(...pts.map((p) => p.bal));
-  const span = Math.max(vMax - vMin, 0.5);
-  const vLo = vMin - span * 0.12, vHi = vMax + span * 0.12;
   const X = (t) => padL + ((t - t0) / (t1 - t0)) * iw;
   const Y = (v) => padT + ih - ((v - vLo) / (vHi - vLo)) * ih;
 
   ctx.strokeStyle = "rgba(255,255,255,.06)"; ctx.lineWidth = 1;
-  ctx.font = "11px ui-sans-serif, system-ui"; ctx.fillStyle = "rgba(139,152,173,.85)";
+  ctx.font = "11px ui-sans-serif, system-ui";
   for (let i = 0; i <= 3; i++) {
     const y = padT + (ih / 3) * i;
     ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+    ctx.fillStyle = "rgba(139,152,173,.85)";
     const val = vHi - ((vHi - vLo) / 3) * i;
     ctx.fillText(val.toFixed(1), 4, y + 4);
   }
+  // 单位提示
+  ctx.fillStyle = "rgba(139,152,173,.6)";
+  ctx.fillText(unit, 4, padT - 3);
 
-  const grad = ctx.createLinearGradient(0, padT, 0, padT + ih);
-  grad.addColorStop(0, color + "55");
-  grad.addColorStop(1, color + "05");
-  ctx.beginPath();
-  pts.forEach((p, i) => (i === 0 ? ctx.moveTo(X(p.t), Y(p.bal)) : ctx.lineTo(X(p.t), Y(p.bal))));
-  ctx.lineTo(X(pts[pts.length - 1].t), padT + ih);
-  ctx.lineTo(X(pts[0].t), padT + ih);
-  ctx.closePath(); ctx.fillStyle = grad; ctx.fill();
+  if (isBar) {
+    const bw = Math.min((iw / Math.max(pts.length, 1)) * 0.62, 26);
+    const grad = ctx.createLinearGradient(0, padT, 0, padT + ih);
+    grad.addColorStop(0, color + "cc");
+    grad.addColorStop(1, color + "33");
+    pts.forEach((p) => {
+      const x = X(p.t) - bw / 2;
+      const y = Y(p.consumption);
+      const bh = Math.max(padT + ih - y, 0);
+      ctx.beginPath();
+      const r = Math.min(5, bh);
+      ctx.moveTo(x + 2, padT + ih);
+      ctx.lineTo(x + 2, y + r);
+      ctx.quadraticCurveTo(x + 2, y, x + 2 + r, y);
+      ctx.lineTo(x + bw - 2 - r, y);
+      ctx.quadraticCurveTo(x + bw - 2, y, x + bw - 2, y + r);
+      ctx.lineTo(x + bw - 2, padT + ih);
+      ctx.closePath();
+      ctx.fillStyle = grad;
+      ctx.fill();
+    });
+  } else {
+    const grad = ctx.createLinearGradient(0, padT, 0, padT + ih);
+    grad.addColorStop(0, color + "55");
+    grad.addColorStop(1, color + "05");
+    ctx.beginPath();
+    pts.forEach((p, i) => (i === 0 ? ctx.moveTo(X(p.t), Y(p.last)) : ctx.lineTo(X(p.t), Y(p.last))));
+    ctx.lineTo(X(pts[pts.length - 1].t), padT + ih);
+    ctx.lineTo(X(pts[0].t), padT + ih);
+    ctx.closePath(); ctx.fillStyle = grad; ctx.fill();
 
-  ctx.beginPath();
-  pts.forEach((p, i) => (i === 0 ? ctx.moveTo(X(p.t), Y(p.bal)) : ctx.lineTo(X(p.t), Y(p.bal))));
-  ctx.strokeStyle = color; ctx.lineWidth = 2.2; ctx.lineJoin = "round"; ctx.stroke();
+    ctx.beginPath();
+    pts.forEach((p, i) => (i === 0 ? ctx.moveTo(X(p.t), Y(p.last)) : ctx.lineTo(X(p.t), Y(p.last))));
+    ctx.strokeStyle = color; ctx.lineWidth = 2.2; ctx.lineJoin = "round"; ctx.stroke();
 
-  const lastP = pts[pts.length - 1];
-  ctx.beginPath(); ctx.arc(X(lastP.t), Y(lastP.bal), 3.6, 0, Math.PI * 2);
-  ctx.fillStyle = color; ctx.fill();
-  ctx.strokeStyle = color + "44"; ctx.lineWidth = 6; ctx.stroke();
+    const lastP = pts[pts.length - 1];
+    ctx.beginPath(); ctx.arc(X(lastP.t), Y(lastP.last), 3.6, 0, Math.PI * 2);
+    ctx.fillStyle = color; ctx.fill();
+    ctx.strokeStyle = color + "44"; ctx.lineWidth = 6; ctx.stroke();
+  }
 
   // 时间轴标签：小时级显示 HH:MM，12 小时级显示 M/D HH
   const fmtT = (t) => {
@@ -475,6 +557,20 @@ function drawChart(canvas, empty, history, color, bucketMs, windowMs) {
   ctx.fillText(fmtT(t0), padL, h - 6);
   ctx.fillText(fmtT(t1), w - padR - 60, h - 6);
 }
+
+// 趋势图模式切换（余量曲线 / 消耗柱状，选择持久化在 localStorage）
+document.querySelectorAll(".seg").forEach((seg) => {
+  const id = seg.getAttribute("data-chart");
+  const saved = localStorage.getItem("chartMode_" + id) || "line";
+  seg.querySelectorAll("button").forEach((btn) => {
+    btn.classList.toggle("on", btn.getAttribute("data-mode") === saved);
+    btn.addEventListener("click", () => {
+      localStorage.setItem("chartMode_" + id, btn.getAttribute("data-mode"));
+      seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === btn));
+      renderChart(id);
+    });
+  });
+});
 
 async function doRefresh() {
   const btn = $("refreshBtn");
@@ -535,8 +631,8 @@ function tickClock() {
 $("refreshBtn").addEventListener("click", doRefresh);
 $("gasRefreshBtn").addEventListener("click", gasRefresh);
 window.addEventListener("resize", () => {
-  if (state.history) drawChart($("chart"), $("chartEmpty"), state.history, "#22d3ee", 3600 * 1000, 24 * 3600 * 1000);
-  if (state.gas_enabled) drawChart($("gasChart"), $("gasChartEmpty"), state.gas_history, "#fbbf24", 12 * 3600 * 1000, 7 * 24 * 3600 * 1000);
+  renderChart("chart");
+  if (state.gas_enabled) renderChart("gasChart");
 });
 
 tickClock(); setInterval(tickClock, 1000);
