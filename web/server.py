@@ -61,56 +61,89 @@ def _status_payload() -> dict:
     }
 
 
+def _apply_gas(settings, state: dict, now) -> dict | None:
+    """查询一次燃气并写入 state；返回 gas_error（成功时为 None）。"""
+    try:
+        gas = query_gas(
+            settings.gas.subsid,
+            settings.gas.token,
+            settings.runtime.request_timeout,
+            settings.runtime.max_retries,
+            settings.runtime.trust_env,
+            settings.gas.cookie,
+        )
+        state.pop("gas_last_error", None)
+        state["gas_balance"] = round(gas.balance, 2)
+        state["gas_last_query_time"] = now.isoformat()
+        state["gas_level"] = "low" if gas.balance < settings.gas.warn_threshold else "ok"
+        state["gas_meter_reading"] = gas.meter_reading
+        gh = state.get("gas_history")
+        if not isinstance(gh, list):
+            gh = []
+        gh.append({"t": now.isoformat(timespec="seconds"), "bal": round(gas.balance, 2)})
+        state["gas_history"] = gh[-m.HISTORY_MAX:]
+        return None
+    except GasAuthExpiredError as exc:
+        state["gas_last_auth_error_at"] = now.isoformat()
+        return {"error": "gas-auth", "message": str(exc)}
+    except GasQueryError as exc:
+        state["gas_last_error"] = {"time": now.isoformat(), "message": str(exc)}
+        return {"error": "gas-query", "message": str(exc)}
+
+
 def _query_once() -> dict:
-    """手动刷新：实时查询一次并更新状态（不触发推送，推送由保活任务负责）。"""
+    """手动刷新：实时查询电费+燃气并更新状态（不触发推送）。电费失败不影响燃气刷新。"""
     settings = load_settings()
     now = m._now(settings)
-    result = query_balance(
-        settings.api,
-        settings.runtime.request_timeout,
-        settings.runtime.max_retries,
-        settings.runtime.trust_env,
-        m.COOKIE_STORE,
-    )
     state = _load_state()
-    state.pop("last_error", None)
-    state["last_balance"] = round(result.balance, 2)
-    state["last_query_time"] = now.isoformat()
-    state["last_level"] = m._determine_level(result.balance, settings)
-    hist = state.get("history")
-    if not isinstance(hist, list):
-        hist = []
-    hist.append({"t": now.isoformat(timespec="seconds"), "bal": round(result.balance, 2)})
-    state["history"] = hist[-m.HISTORY_MAX:]
+
+    elec_error = None
+    try:
+        result = query_balance(
+            settings.api,
+            settings.runtime.request_timeout,
+            settings.runtime.max_retries,
+            settings.runtime.trust_env,
+            m.COOKIE_STORE,
+        )
+        state.pop("last_error", None)
+        state["last_balance"] = round(result.balance, 2)
+        state["last_query_time"] = now.isoformat()
+        state["last_level"] = m._determine_level(result.balance, settings)
+        hist = state.get("history")
+        if not isinstance(hist, list):
+            hist = []
+        hist.append({"t": now.isoformat(timespec="seconds"), "bal": round(result.balance, 2)})
+        state["history"] = hist[-m.HISTORY_MAX:]
+    except AuthExpiredError as exc:
+        state["last_auth_error_at"] = now.isoformat()
+        elec_error = {"error": "auth", "message": str(exc)}
+    except QueryError as exc:
+        state["last_error"] = {"time": now.isoformat(), "message": str(exc)}
+        elec_error = {"error": "query", "message": str(exc)}
 
     gas_error = None
     if settings.gas.enabled:
-        try:
-            gas = query_gas(
-                settings.gas.subsid,
-                settings.gas.token,
-                settings.runtime.request_timeout,
-                settings.runtime.max_retries,
-                settings.runtime.trust_env,
-                settings.gas.cookie,
-            )
-            state.pop("gas_last_error", None)
-            state["gas_balance"] = round(gas.balance, 2)
-            state["gas_last_query_time"] = now.isoformat()
-            state["gas_level"] = "low" if gas.balance < settings.gas.warn_threshold else "ok"
-            state["gas_meter_reading"] = gas.meter_reading
-            gh = state.get("gas_history")
-            if not isinstance(gh, list):
-                gh = []
-            gh.append({"t": now.isoformat(timespec="seconds"), "bal": round(gas.balance, 2)})
-            state["gas_history"] = gh[-m.HISTORY_MAX:]
-        except GasAuthExpiredError as exc:
-            state["gas_last_auth_error_at"] = now.isoformat()
-            gas_error = {"error": "gas-auth", "message": str(exc)}
-        except GasQueryError as exc:
-            state["gas_last_error"] = {"time": now.isoformat(), "message": str(exc)}
-            gas_error = {"error": "gas-query", "message": str(exc)}
+        gas_error = _apply_gas(settings, state, now)
 
+    m._save_state(state)
+    payload = _status_payload()
+    if elec_error:
+        payload["elec_error"] = elec_error
+    if gas_error:
+        payload["gas_error"] = gas_error
+    return payload
+
+
+def _query_gas_only() -> dict:
+    """只刷新燃气（独立按钮用）。"""
+    settings = load_settings()
+    now = m._now(settings)
+    state = _load_state()
+    if settings.gas.enabled:
+        gas_error = _apply_gas(settings, state, now)
+    else:
+        gas_error = {"error": "gas-disabled", "message": "未配置燃气（需要在 .env 填 GAS_SUBSID 与 GAS_TOKEN）"}
     m._save_state(state)
     payload = _status_payload()
     if gas_error:
@@ -170,10 +203,13 @@ class Handler(BaseHTTPRequestHandler):
                 return _send_json(self, 200, _query_once())
             except ConfigError as exc:
                 return _send_json(self, 500, {"error": "config", "message": str(exc)})
-            except AuthExpiredError as exc:
-                return _send_json(self, 502, {"error": "auth", "message": str(exc)})
-            except QueryError as exc:
-                return _send_json(self, 502, {"error": "query", "message": str(exc)})
+            except Exception as exc:  # noqa: BLE001
+                return _send_json(self, 500, {"error": "internal", "message": str(exc)})
+        if path == "/api/query_gas":
+            try:
+                return _send_json(self, 200, _query_gas_only())
+            except ConfigError as exc:
+                return _send_json(self, 500, {"error": "config", "message": str(exc)})
             except Exception as exc:  # noqa: BLE001
                 return _send_json(self, 500, {"error": "internal", "message": str(exc)})
         return _send_json(self, 404, {"error": "not found"})

@@ -76,6 +76,8 @@
   .btn:hover{filter:brightness(1.06);transform:translateY(-1px)}
   .btn:active{transform:translateY(0)}
   .btn:disabled{opacity:.55;cursor:not-allowed;transform:none;filter:none}
+  .btn.gas{background:linear-gradient(135deg,#fde68a,#fbbf24 55%,#f59e0b);box-shadow:0 8px 24px rgba(251,191,36,.28);color:#2a1c00}
+  .btn.gas .spin{border-color:rgba(0,0,0,.25);border-top-color:#2a1c00}
   .btn .spin{width:14px;height:14px;border-radius:50%;border:2px solid rgba(0,0,0,.25);border-top-color:#06222b;
     animation:rot .7s linear infinite;display:none}
   .btn.loading .spin{display:inline-block}
@@ -188,6 +190,7 @@
       <div class="stat"><span class="k">表读数</span><span class="v" id="gasMeter">—</span></div>
       <div class="stat"><span class="k">上次查询</span><span class="v" id="gasLastQuery">—</span></div>
       <div class="stat"><span class="k">提醒阈值</span><span class="v" id="gasWarn">—</span></div>
+      <button class="btn gas" id="gasRefreshBtn" type="button"><span class="spin"></span>立即刷新</button>
     </div>
   </section>
 
@@ -424,18 +427,44 @@ async function doRefresh() {
     const res = await fetch("/api/query", { method: "POST", cache: "no-store" });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const err = body.error || "unknown";
-      const msg = body.message || ("HTTP " + res.status);
-      if (err === "auth") toast("电费会话已失效：" + msg, "err");
-      else toast("刷新失败：" + msg, "err");
+      toast("刷新失败：" + (body.message || ("HTTP " + res.status)), "err");
       return;
     }
     render(body);
-    const parts = [];
-    if (body.balance != null) parts.push(`电费 ${fmtNum(body.balance)} 度`);
-    if (body.gas_balance != null) parts.push(`燃气 ${fmtNum(body.gas_balance)} 元`);
-    toast("刷新成功：" + parts.join(" · "), "ok");
-    if (body.gas_error) toast("燃气刷新失败：" + (body.gas_error.message || body.gas_error.error), "err");
+    const errs = [];
+    if (body.elec_error) errs.push("电费：" + (body.elec_error.message || body.elec_error.error));
+    if (body.gas_error) errs.push("燃气：" + (body.gas_error.message || body.gas_error.error));
+    if (errs.length) {
+      toast("刷新部分失败 —— " + errs.join("；"), "err");
+    } else {
+      const parts = [];
+      if (body.balance != null) parts.push(`电费 ${fmtNum(body.balance)} 度`);
+      if (body.gas_balance != null) parts.push(`燃气 ${fmtNum(body.gas_balance)} 元`);
+      toast("刷新成功：" + parts.join(" · "), "ok");
+    }
+  } catch (err) {
+    toast("请求失败：" + err.message, "err");
+  } finally {
+    btn.disabled = false; btn.classList.remove("loading");
+  }
+}
+
+async function gasRefresh() {
+  const btn = $("gasRefreshBtn");
+  btn.disabled = true; btn.classList.add("loading");
+  try {
+    const res = await fetch("/api/query_gas", { method: "POST", cache: "no-store" });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast("燃气刷新失败：" + (body.message || ("HTTP " + res.status)), "err");
+      return;
+    }
+    render(body);
+    if (body.gas_error) {
+      toast("燃气刷新失败：" + (body.gas_error.message || body.gas_error.error), "err");
+    } else {
+      toast("燃气已刷新：" + fmtNum(body.gas_balance) + " 元", "ok");
+    }
   } catch (err) {
     toast("请求失败：" + err.message, "err");
   } finally {
@@ -448,6 +477,7 @@ function tickClock() {
 }
 
 $("refreshBtn").addEventListener("click", doRefresh);
+$("gasRefreshBtn").addEventListener("click", gasRefresh);
 window.addEventListener("resize", () => {
   if (state.history) drawChart($("chart"), $("chartEmpty"), state.history, "#22d3ee");
   if (state.gas_enabled) drawChart($("gasChart"), $("gasChartEmpty"), state.gas_history, "#fbbf24");
