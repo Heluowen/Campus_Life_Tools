@@ -70,7 +70,10 @@ def _close_console() -> None:
 
 def _log(msg: str) -> None:
     line = f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}"
-    print(line, flush=True)
+    try:
+        print(line, flush=True)
+    except Exception:  # noqa: BLE001 - pythonw 下 sys.stdout 为 None，静默降级写文件
+        pass
     if LOG_FILE is not None:
         try:
             with open(LOG_FILE, "a", encoding="utf-8") as fh:

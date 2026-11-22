@@ -291,13 +291,25 @@ class Handler(BaseHTTPRequestHandler):
         return _send_json(self, 404, {"error": "not found"})
 
     def log_message(self, fmt: str, *args) -> None:  # noqa: D401
-        print(f"[web] {self.address_string()} {fmt % args}", flush=True)
+        # pythonw 无控制台时 sys.stdout 为 None，print 会抛异常导致请求失败
+        try:
+            print(f"[web] {self.address_string()} {fmt % args}", flush=True)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 class _PanelServer(ThreadingHTTPServer):
     # Windows 下 SO_REUSEADDR 会让两个进程同时绑同一端口（双实例互相抢请求），
     # 这里禁用它，保证端口独占；同名进程重复启动会直接报错退出。
     allow_reuse_address = False
+
+
+def _log(message: str) -> None:
+    """pythonw 无控制台时 sys.stdout 为 None，print 会抛异常，这里静默降级。"""
+    try:
+        print(message, flush=True)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -307,14 +319,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         httpd = _PanelServer(("127.0.0.1", args.port), Handler)
     except OSError as exc:
-        print(f"[ERROR] 端口 {args.port} 被占用（可能已有面板在运行）：{exc}")
+        _log(f"[ERROR] 端口 {args.port} 被占用（可能已有面板在运行）：{exc}")
         return 1
-    print(f"电费面板已启动：http://127.0.0.1:{args.port}")
-    print("页面每 30 秒自动同步；「立即刷新」会实时查询网关。Ctrl+C 退出。")
+    _log(f"电费面板已启动：http://127.0.0.1:{args.port}")
+    _log("页面每 30 秒自动同步；「立即刷新」会实时查询网关。Ctrl+C 退出。")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("已退出")
+        _log("已退出")
     finally:
         httpd.server_close()
     return 0
