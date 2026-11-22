@@ -113,6 +113,21 @@
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
   .toast.err{border-color:rgba(248,113,113,.5)}
   .toast.ok{border-color:rgba(52,211,153,.45)}
+  .btn-ghost{appearance:none;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.05);color:var(--text);
+    border-radius:10px;padding:6px 12px;font-size:12px;cursor:pointer;transition:all .15s}
+  .btn-ghost:hover{background:rgba(255,255,255,.11);border-color:rgba(34,211,238,.45)}
+  .modal-mask{position:fixed;inset:0;background:rgba(5,9,20,.72);backdrop-filter:blur(6px);display:none;
+    place-items:center;z-index:80;padding:18px}
+  .modal-mask.show{display:grid}
+  .modal{width:100%;max-width:560px;background:#0e1830;border:1px solid rgba(255,255,255,.14);
+    border-radius:18px;padding:22px;box-shadow:0 24px 64px rgba(0,0,0,.6)}
+  .modal h3{font-size:16px;font-weight:650;margin-bottom:6px}
+  .modal p{font-size:12.5px;color:var(--muted);line-height:1.6;margin-bottom:12px}
+  .modal textarea{width:100%;min-height:130px;resize:vertical;background:rgba(255,255,255,.04);
+    border:1px solid rgba(255,255,255,.15);border-radius:12px;color:var(--text);padding:10px 12px;
+    font-family:ui-monospace, Consolas, monospace;font-size:12px;outline:none}
+  .modal textarea:focus{border-color:rgba(34,211,238,.6)}
+  .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:14px}
   @media (max-width:720px){ .bal .num{font-size:52px} }
 </style>
 </head>
@@ -128,7 +143,10 @@
     </div>
     <div class="hdr-right">
       <div class="clock"><span class="dot" id="liveDot"></span><span id="clock">--:--:--</span></div>
-      <div class="clock" id="syncInfo" style="font-size:12px">页面每 30 秒自动同步</div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span class="clock" id="syncInfo" style="font-size:12px">页面每 30 秒自动同步</span>
+        <button class="btn-ghost" id="openCurlModalBtn" type="button">更新凭据</button>
+      </div>
     </div>
   </header>
 
@@ -251,6 +269,18 @@
 </div>
 
 <div class="toast" id="toast"></div>
+
+<div class="modal-mask" id="curlModal">
+  <div class="modal">
+    <h3>通过 cURL 热更新凭据</h3>
+    <p>从 Charles / 抓包工具右键 <b>Copy cURL Request</b>（电费 YJF004 或燃气 preCheck/refreshToken 均可），粘贴到下方即可自动提取并写入本地 <code>.env</code>，无需重启面板或保活进程。</p>
+    <textarea id="curlInput" placeholder="curl -H 'Cookie: ...' --data 'TXCODE=YJF004&amp;SKEY=...&amp;USERID=...&amp;roomid=...' 'https://app.xiaoyuan.ccb.com/LHECISM/B2CMainPlat_00'"></textarea>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="cancelCurlBtn" type="button">取消</button>
+      <button class="btn" id="submitCurlBtn" type="button" style="padding:8px 16px;font-size:13px"><span class="spin"></span>解析并更新</button>
+    </div>
+  </div>
+</div>
 
 <script>
 "use strict";
@@ -756,6 +786,40 @@ function tickClock() {
 
 $("refreshBtn").addEventListener("click", doRefresh);
 $("gasRefreshBtn").addEventListener("click", gasRefresh);
+$("openCurlModalBtn").addEventListener("click", () => {
+  $("curlInput").value = "";
+  $("curlModal").classList.add("show");
+  $("curlInput").focus();
+});
+$("cancelCurlBtn").addEventListener("click", () => $("curlModal").classList.remove("show"));
+$("curlModal").addEventListener("click", (ev) => {
+  if (ev.target === $("curlModal")) $("curlModal").classList.remove("show");
+});
+$("submitCurlBtn").addEventListener("click", async () => {
+  const curl = $("curlInput").value.trim();
+  if (!curl) { toast("请先粘贴 cURL 命令", "err"); return; }
+  const btn = $("submitCurlBtn");
+  btn.disabled = true; btn.classList.add("loading");
+  try {
+    const res = await fetch("/api/import_curl", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ curl }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast("更新失败：" + (body.message || ("HTTP " + res.status)), "err");
+      return;
+    }
+    $("curlModal").classList.remove("show");
+    toast(body.message || "凭据已更新", "ok");
+    fetchStatus();
+  } catch (err) {
+    toast("请求失败：" + err.message, "err");
+  } finally {
+    btn.disabled = false; btn.classList.remove("loading");
+  }
+});
 bindChartHover("chart");
 bindChartHover("gasChart");
 window.addEventListener("resize", () => {

@@ -72,11 +72,28 @@ _SENDERS = {
 
 
 def send_notification(push: PushSettings, title: str, content: str) -> bool:
-    """按配置渠道发送通知；成功返回 True，PUSH_CHANNEL=none 返回 False。"""
-    if push.channel == "none":
+    """按配置渠道发送通知（支持逗号分隔多渠道并发/顺序发送）；全部失败时抛 NotifyError。"""
+    if push.is_none:
         print("[INFO] PUSH_CHANNEL=none，跳过推送")
         return False
-    sender = _SENDERS.get(push.channel)
-    if sender is None:
-        raise NotifyError(f"未支持的推送渠道：{push.channel}")
-    return sender(push, title, content)
+
+    any_ok = False
+    errors: list[str] = []
+    for ch in push.channels:
+        if ch == "none":
+            continue
+        sender = _SENDERS.get(ch)
+        if sender is None:
+            errors.append(f"未支持的推送渠道：{ch}")
+            continue
+        try:
+            if sender(push, title, content):
+                any_ok = True
+        except NotifyError as exc:
+            errors.append(f"[{ch}] {exc}")
+
+    if not any_ok and errors:
+        raise NotifyError("；".join(errors))
+    if errors:
+        print(f"[WARN] 部分推送渠道失败：{'；'.join(errors)}")
+    return any_ok

@@ -8,12 +8,18 @@
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass
+from pathlib import Path
 
 from dotenv import load_dotenv
 
+BASE_DIR = Path(__file__).resolve().parent
+ENV_FILE = BASE_DIR / ".env"
+_ENV_LOCK = threading.Lock()
+
 # 读取当前目录的 .env；不存在时不影响通过环境变量注入（如 GitHub Actions）
-load_dotenv()
+load_dotenv(ENV_FILE)
 
 PUSH_CHANNELS = ("wecom", "pushplus", "serverchan", "bark", "none")
 
@@ -53,15 +59,16 @@ def _bool(name: str, default: bool) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
-def _infer_channel(raw_channel: str, creds: dict) -> str:
-    """PUSH_CHANNEL 未显式指定时，按已配置的凭据自动推断推送渠道。"""
-    channel = raw_channel.strip().lower()
-    if channel:
-        return channel
-    for candidate in ("wecom", "pushplus", "serverchan", "bark"):
-        if creds[candidate]:
-            return candidate
-    return "none"
+def _infer_channels(raw_channel: str, creds: dict[str, str]) -> tuple[str, ...]:
+    """PUSH_CHANNEL 未显式指定时，按已配置的凭据自动推断推送渠道（支持逗号分隔多渠道）。"""
+    raw = raw_channel.strip().lower()
+    if raw:
+        parts = tuple(dict.fromkeys(p.strip() for p in raw.split(",") if p.strip()))
+        if "none" in parts and len(parts) > 1:
+            raise ConfigError("PUSH_CHANNEL 指定 none 时不能同时启用其他推送渠道")
+        return parts or ("none",)
+    found = tuple(c for c in ("wecom", "pushplus", "serverchan", "bark") if creds[c])
+    return found or ("none",)
 
 
 @dataclass(frozen=True)
@@ -75,6 +82,8 @@ class ApiSettings:
     room_name: str = ""
     user_agent: str = ""
     gateway_url: str = ""
+    branch_id: str = ""
+    referer: str = ""
     price: float = 0.0  # 电费单价（元/度），>0 时用于折算剩余金额
 
     @property
@@ -96,10 +105,20 @@ class AlertSettings:
 @dataclass(frozen=True)
 class PushSettings:
     channel: str
+    channels: tuple[str, ...] = ()
     wecom_webhook: str = ""
     pushplus_token: str = ""
     serverchan_key: str = ""
     bark_url: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.channels:
+            parts = tuple(p.strip() for p in self.channel.split(",") if p.strip()) or ("none",)
+            object.__setattr__(self, "channels", parts)
+
+    @property
+    def is_none(self) -> bool:
+        return self.channels == ("none",)
 
 
 @dataclass(frozen=True)
@@ -114,29 +133,42 @@ class GasSettings:
     refresh_token: str = ""  # vcc-oauth refresh_token（可自动续期 access_token）
     clientid: str = ""  # vcc-oauth channel（如 pe92a8wechat11301DY0105）
     token_issued_at: float = 0.0  # access_token 签发时间（epoch 秒），用于主动续期判断
+    query_interval: int = 1800  # 保活模式下燃气查询最小间隔（秒），避免陪绑高频查燃气
 
 
-def update_env(key: str, value: str) -> None:
-    """更新项目 .env 中的某个键（存在则替换，不存在则追加）。"""
-    from pathlib import Path as _Path
+def update_env_many(updates: dict[str, str], env_path: Path | None = None) -> None:
+    """原子批量更新 .env 中的多个键（存在则替换，不存在则追加），线程安全。"""
+    if not updates:
+        return
+    target = env_path or ENV_FILE
+    with _ENV_LOCK:
+        try:
+            text = target.read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+        lines = text.splitlines()
+        remaining = dict(updates)
+        out: list[str] = []
+        for line in lines:
+            replaced = False
+            for k in list(remaining.keys()):
+                if line.startswith(k + "="):
+                    out.append(f"{k}={remaining.pop(k)}")
+                    replaced = True
+                    break
+            if not replaced:
+                out.append(line)
+        for k, v in remaining.items():
+            out.append(f"{k}={v}")
+        content = "\n".join(out).rstrip("\n") + "\n"
+        tmp = target.with_name(f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(content, encoding="utf-8")
+        tmp.replace(target)
 
-    env_path = _Path(__file__).resolve().parent / ".env"
-    try:
-        text = env_path.read_text(encoding="utf-8")
-    except OSError:
-        text = ""
-    lines = text.splitlines()
-    out = []
-    replaced = False
-    for line in lines:
-        if line.startswith(key + "="):
-            out.append(f"{key}={value}")
-            replaced = True
-        else:
-            out.append(line)
-    if not replaced:
-        out.append(f"{key}={value}")
-    env_path.write_text("\n".join(out).rstrip("\n") + "\n", encoding="utf-8")
+
+def update_env(key: str, value: str, env_path: Path | None = None) -> None:
+    """原子更新项目 .env 中的某个键（存在则替换，不存在则追加）。"""
+    update_env_many({key: value}, env_path=env_path)
 
 
 @dataclass(frozen=True)
@@ -157,23 +189,26 @@ class Settings:
 
 
 def _validate_push(push: PushSettings) -> None:
-    if push.channel == "wecom" and not push.wecom_webhook:
-        raise ConfigError("PUSH_CHANNEL=wecom 需要填写 WECOM_WEBHOOK（企业微信群机器人地址）")
-    if push.channel == "pushplus" and not push.pushplus_token:
-        raise ConfigError("PUSH_CHANNEL=pushplus 需要填写 PUSHPLUS_TOKEN")
-    if push.channel == "serverchan" and not push.serverchan_key:
-        raise ConfigError("PUSH_CHANNEL=serverchan 需要填写 SERVERCHAN_KEY")
-    if push.channel == "bark" and not push.bark_url:
-        raise ConfigError("PUSH_CHANNEL=bark 需要填写 BARK_URL")
+    for ch in push.channels:
+        if ch not in PUSH_CHANNELS:
+            raise ConfigError(f"PUSH_CHANNEL 只能包含 {PUSH_CHANNELS}，当前值：{ch!r}")
+        if ch == "wecom" and not push.wecom_webhook:
+            raise ConfigError("PUSH_CHANNEL 包含 wecom 时需要填写 WECOM_WEBHOOK（企业微信群机器人地址）")
+        if ch == "pushplus" and not push.pushplus_token:
+            raise ConfigError("PUSH_CHANNEL 包含 pushplus 时需要填写 PUSHPLUS_TOKEN")
+        if ch == "serverchan" and not push.serverchan_key:
+            raise ConfigError("PUSH_CHANNEL 包含 serverchan 时需要填写 SERVERCHAN_KEY")
+        if ch == "bark" and not push.bark_url:
+            raise ConfigError("PUSH_CHANNEL 包含 bark 时需要填写 BARK_URL")
 
 
-def load_settings() -> Settings:
+def load_settings(env_path: Path | None = None) -> Settings:
     """从 .env / 环境变量加载并校验配置；配置非法时抛 ConfigError。
 
     每次调用都重新读取 .env（override=True），这样用户重新抓包更新凭据后，
     长驻进程（如网页面板、保活守护）无需重启即可生效。
     """
-    load_dotenv(override=True)
+    load_dotenv(env_path or ENV_FILE, override=True)
     api = ApiSettings(
         userid=_raw("CCB_USERID"),
         skey=_raw("CCB_SKEY"),
@@ -182,6 +217,8 @@ def load_settings() -> Settings:
         room_name=_raw("CCB_ROOM_NAME"),
         user_agent=_raw("CCB_USER_AGENT"),
         gateway_url=_raw("CCB_GATEWAY_URL"),
+        branch_id=_raw("CCB_BRANCHID"),
+        referer=_raw("CCB_REFERER"),
         price=_float("ELEC_PRICE", 0.0),
     )
 
@@ -216,11 +253,10 @@ def load_settings() -> Settings:
         "serverchan": serverchan_key,
         "bark": bark_url,
     }
-    channel = _infer_channel(_raw("PUSH_CHANNEL"), creds)
-    if channel not in PUSH_CHANNELS:
-        raise ConfigError(f"PUSH_CHANNEL 只能是 {PUSH_CHANNELS}，当前值：{channel!r}")
+    channels = _infer_channels(_raw("PUSH_CHANNEL"), creds)
     push = PushSettings(
-        channel=channel,
+        channel=",".join(channels),
+        channels=channels,
         wecom_webhook=wecom_webhook,
         pushplus_token=pushplus_token,
         serverchan_key=serverchan_key,
@@ -246,6 +282,7 @@ def load_settings() -> Settings:
         refresh_token=_raw("GAS_REFRESH_TOKEN"),
         clientid=_raw("GAS_CLIENTID"),
         token_issued_at=_float("GAS_TOKEN_ISSUED_AT", 0.0),
+        query_interval=max(_int("GAS_QUERY_INTERVAL", 1800), 60),
     )
     if gas.enabled and gas.warn_threshold <= 0:
         raise ConfigError("GAS_WARN_THRESHOLD 必须大于 0")

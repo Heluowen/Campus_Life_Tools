@@ -1,32 +1,48 @@
 @echo off
+chcp 65001 >nul 2>&1
 setlocal
 cd /d "%~dp0"
 
 echo ============================================
-echo   Ğ£Ô°Éú»î¼à¿Ø - Ò»¼üÆô¶¯£¨µç·Ñ + È¼Æø£©
+echo   æ ¡å›­ç”Ÿæ´»ç›‘æ§ - ä¸€é”®å¯åŠ¨ï¼ˆç”µè´¹ + ç‡ƒæ°”ï¼‰
 echo ============================================
 echo.
 
-netstat -ano | findstr ":8877" | findstr "LISTENING" >nul 2>&1
-if not errorlevel 1 (
-    echo [SKIP] Ãæ°å·şÎñÒÑÔÚÔËĞĞ: http://127.0.0.1:8877
-) else (
-    start "" "H:\AstrBot\backend\python\pythonw.exe" "%~dp0web\server.py" --port 8877
-    echo [OK]   Ãæ°å·şÎñÒÑÆô¶¯£¨ºóÌ¨ÎŞ´°¿Ú£©: http://127.0.0.1:8877
+REM Auto-detect pythonw.exe: .venv -> venv -> PYTHONW_EXE -> PATH
+set "PYW="
+if exist "%~dp0.venv\Scripts\pythonw.exe" set "PYW=%~dp0.venv\Scripts\pythonw.exe"
+if not defined PYW if exist "%~dp0venv\Scripts\pythonw.exe" set "PYW=%~dp0venv\Scripts\pythonw.exe"
+if not defined PYW if defined PYTHONW_EXE set "PYW=%PYTHONW_EXE%"
+if not defined PYW (
+    for /f "delims=" %%p in ('where pythonw.exe 2^>nul') do (
+        if not defined PYW set "PYW=%%p"
+    )
 )
 
-if exist "%~dp0keepalive.lock" (
-    echo [SKIP] ±£»îÊØ»¤ÒÑÔÚÔËĞĞ£¨keepalive.lock£©
-) else (
-    start "" "H:\AstrBot\backend\python\pythonw.exe" "%~dp0keep_alive.py" --interval 600 --log-file "%~dp0keepalive.log"
-    echo [OK]   ±£»îÊØ»¤ÒÑÆô¶¯£¨ºóÌ¨ÎŞ´°¿Ú£¬ÈÕÖ¾: keepalive.log£©
+if not defined PYW (
+    echo [ERROR] æœªæ‰¾åˆ° pythonw.exeï¼Œè¯·å…ˆåˆ›å»ºè™šæ‹Ÿç¯å¢ƒ .venv æˆ–å°† Python åŠ å…¥ PATHï¼Œæˆ–è®¾ç½®ç¯å¢ƒå˜é‡ PYTHONW_EXEã€‚
+    if not defined NO_PAUSE pause
+    exit /b 1
 )
+echo [INFO] ä½¿ç”¨è§£é‡Šå™¨: "%PYW%"
+
+netstat -ano | findstr ":8877" | findstr "LISTENING" >nul 2>&1
+if not errorlevel 1 (
+    echo [SKIP] é¢æ¿æœåŠ¡å·²åœ¨è¿è¡Œ: http://127.0.0.1:8877
+) else (
+    start "" "%PYW%" "%~dp0web\server.py" --port 8877
+    echo [OK]   é¢æ¿æœåŠ¡å·²å¯åŠ¨ï¼ˆåå°æ— çª—å£ï¼‰: http://127.0.0.1:8877
+)
+
+REM keep_alive.py uses OS file lock for single-instance mutual exclusion
+start "" "%PYW%" "%~dp0keep_alive.py" --interval 600 --log-file "%~dp0keepalive.log"
+echo [OK]   ä¿æ´»å®ˆæŠ¤å·²å°è¯•æ‹‰èµ·ï¼ˆå•å®ä¾‹äº’æ–¥ï¼Œåå°æ— çª—å£ï¼Œæ—¥å¿—: keepalive.logï¼‰
 
 ping -n 3 127.0.0.1 >nul
 start "" http://127.0.0.1:8877
 
 echo.
-echo Íê³É£ºÈ«²¿ºóÌ¨ÔËĞĞ¡¢ÎŞ¿ØÖÆÌ¨´°¿Ú¡£
-echo Í£Ö¹È«²¿·şÎñ: Ë«»÷ stop.bat
-echo ²é¿´±£»îÈÕÖ¾: type keepalive.log
+echo å®Œæˆï¼šå…¨éƒ¨åå°è¿è¡Œã€æ— æ§åˆ¶å°çª—å£ã€‚
+echo åœæ­¢å…¨éƒ¨æœåŠ¡: åŒå‡» stop.bat
+echo æŸ¥çœ‹ä¿æ´»æ—¥å¿—: type keepalive.log
 if not defined NO_PAUSE pause

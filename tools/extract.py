@@ -4,8 +4,9 @@ Usage:
     python extract.py <file.chls>
 """
 import sys
+from pathlib import Path
 
-sys.path.insert(0, r"H:\Deepseek-Harness\Zone_2\campus-elec-monitor\tools")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import chls_dump as C  # noqa: E402
 
 

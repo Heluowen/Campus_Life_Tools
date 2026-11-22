@@ -32,6 +32,7 @@ import main as m
 BASE_DIR = Path(__file__).resolve().parent
 LOCK_FILE = BASE_DIR / "keepalive.lock"
 LOG_FILE: Path | None = None
+_LOCK_FH = None
 
 
 def _get_console_hwnd() -> int:
@@ -83,24 +84,61 @@ def _log(msg: str) -> None:
 
 
 def _acquire_lock() -> bool:
-    """单实例锁：已有存活的 keep_alive 进程则返回 False。"""
-    if LOCK_FILE.exists():
-        try:
-            pid = int(LOCK_FILE.read_text().strip())
-            os.kill(pid, 0)
-            return False
-        except (ValueError, OSError):
-            pass
+    """跨平台内核级单实例文件锁：进程崩溃或断电后由 OS 自动释放，避免残留死锁。"""
+    global _LOCK_FH
     try:
-        LOCK_FILE.write_text(str(os.getpid()))
+        fh = open(LOCK_FILE, "a+", encoding="utf-8")
+    except OSError:
+        return False
+
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return False
+
+    try:
+        fh.seek(0)
+        fh.truncate()
+        fh.write(str(os.getpid()))
+        fh.flush()
     except OSError:
         pass
+    _LOCK_FH = fh
     return True
 
 
 def _release_lock() -> None:
+    global _LOCK_FH
+    fh = _LOCK_FH
+    _LOCK_FH = None
+    if fh is not None:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            fh.close()
+        except OSError:
+            pass
     try:
-        if LOCK_FILE.exists() and LOCK_FILE.read_text().strip() == str(os.getpid()):
+        if LOCK_FILE.exists():
             LOCK_FILE.unlink()
     except OSError:
         pass
@@ -138,7 +176,7 @@ def main() -> int:
         while True:
             try:
                 settings = load_settings()
-                code = m.run_once(settings, dry_run=False)
+                code = m.run_once(settings, dry_run=False, respect_gas_interval=True)
             except ConfigError as exc:
                 _log(f"配置错误：{exc}")
                 code = m.EXIT_CONFIG
@@ -151,11 +189,6 @@ def main() -> int:
                 _log("查询失败（将按间隔重试）")
             else:
                 _log(f"本次结束 code={code}")
-
-            try:
-                LOCK_FILE.write_text(str(os.getpid()))
-            except OSError:
-                pass
 
             if args.once:
                 _log("--once 已执行一次，退出")

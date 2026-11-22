@@ -13,8 +13,9 @@ ttl_log.txt
 # 计划任务启动脚本（本机专用）
 start_keepalive.bat
 
-# 抓包分析产物（含个人数据，不入库）
+# 抓包分析产物（含个人数据与第三方前端包，不入库）
 tools/h5/
+tools/gas_js/
 tools/dump_full.txt
 tools/dump_*.txt
 tools/transactions.json

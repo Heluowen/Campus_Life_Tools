@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,7 +25,7 @@ from config import ApiSettings
 GATEWAY_URL = "https://app.xiaoyuan.ccb.com/LHECISM/B2CMainPlat_00"
 TXCODE_BALANCE = "YJF004"
 PAY_TYPE = "elec"
-# 平台公共表单字段（真实抓包 test_6.chls 中每条请求都携带）
+# 平台公共表单字段默认配置（可通过 .env 中的 CCB_BRANCHID / CCB_REFERER 覆盖）
 BRANCHID = "555000000"
 SERVLET_NAME = "B2CMainPlat_00"
 CCB_IBS_VERSION = "V6"
@@ -72,7 +73,7 @@ def _build_headers(api: ApiSettings) -> dict:
         "Content-Type": "application/x-www-form-urlencoded",
         "Accept": "application/json, text/plain, */*",
         "Origin": ORIGIN,
-        "Referer": REFERER,
+        "Referer": api.referer or REFERER,
         "User-Agent": api.user_agent or DEFAULT_USER_AGENT,
     }
     return headers
@@ -112,15 +113,17 @@ def _save_cookie_store(path: Path | None, cookies) -> None:
     except AttributeError:
         return
     try:
-        path.write_text(json.dumps(pairs, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps(pairs, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        tmp.replace(path)
     except OSError:
         pass
 
 
 def _build_form(api: ApiSettings) -> dict:
-    # 平台公共字段 + YJF004 业务字段（与真实抓包完全一致，seq 见 test_6.chls）
+    # 平台公共字段 + YJF004 业务字段
     return {
-        "BRANCHID": BRANCHID,
+        "BRANCHID": api.branch_id or BRANCHID,
         "SERVLET_NAME": SERVLET_NAME,
         "CCB_IBSVersion": CCB_IBS_VERSION,
         "PT_STYLE": PT_STYLE,

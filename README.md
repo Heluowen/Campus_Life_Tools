@@ -42,9 +42,11 @@ campus-elec-monitor/
 │   └── static/
 │       └── index.html # 自包含前端页面（无外部依赖）
 └── tools/
-    ├── chls_dump.py  # Charles .chls（Java 序列化）解析器
-    ├── extract.py    # 抓包 → 结构化事务提取
-    └── ttl_probe.py  # 会话空闲超时（TTL）精确校准
+    ├── chls_dump.py        # Charles .chls（Java 序列化）解析器
+    ├── extract.py          # 抓包 → 结构化事务提取
+    ├── harvest_creds.py    # 一键从 .chls / cURL 提取电费+燃气全套凭据写回 .env
+    ├── harvest_gas_token.py # 应急仅提取燃气 Bearer token
+    └── ttl_probe.py        # 会话空闲超时（TTL）精确校准
 ```
 
 ## 快速开始
@@ -54,7 +56,8 @@ cd campus-elec-monitor
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-Copy-Item .env.example .env   # 然后编辑 .env
+Copy-Item .env.example .env   # 然后编辑 .env（或用 harvest_creds.py 一键填充）
+python tools/harvest_creds.py capture.chls --write  # 可选：从抓包自动填充 .env
 python main.py --dry-run      # 联调：只查询与判断，不推送、不写状态
 python main.py                # 正式运行
 ```
@@ -86,6 +89,7 @@ python web/server.py --port 8877
   - 电费：**近 24 小时 / 近 7 天可切换**，按小时统计；曲线 Y 轴上限 = 近期最高值 **+50 度**
   - 燃气：近 7 天按 12 小时统计；曲线 Y 轴上限 = 近期最高值 **+5 元**
 - **两卡独立刷新**：电费卡「立即刷新」只查电费（`POST /api/query_elec`），燃气卡「立即刷新」只查燃气（`POST /api/query_gas`），互不影响、互不阻塞
+- **网页热更新凭据**：右上角点击「更新凭据」，粘贴从 Charles 导出的 cURL（电费/燃气均可），自动解析写入 `.env` 并清理旧 `cookies.json`，无需重启面板或保活进程
 - 页面每 30 秒自动同步一次；超过 32 分钟无更新会提示「可能已过期」
 
 服务只监听 `127.0.0.1`，不暴露到局域网。Ctrl+C 停止。
@@ -105,7 +109,8 @@ python web/server.py --port 8877
 | 燃气请求头 `Authorization: Bearer x` | `GAS_TOKEN` | 微信 OAuth token（失效后需重新抓包） |
 | 燃气请求头 `Cookie` | `GAS_COOKIE` | 可选，`__h5_oauth_ticket__` 等 |
 | — | `GAS_WARN_THRESHOLD` | 燃气提醒阈值（元，默认 15） |
-| — | `WECOM_WEBHOOK` / `PUSHPLUS_TOKEN` / `SERVERCHAN_KEY` / `BARK_URL` | 推送凭据，留空则自动推断渠道；`none` 表示只打印不推送 |
+| — | `WECOM_WEBHOOK` / `PUSHPLUS_TOKEN` / `SERVERCHAN_KEY` / `BARK_URL` | 推送凭据（支持多渠道逗号分隔并发，如 `PUSH_CHANNEL=wecom,bark`；留空自动启用全部已填渠道） |
+| — | `GAS_QUERY_INTERVAL` | 保活模式下燃气最小查询间隔（秒，默认 1800），避免陪绑电费 10 分钟高频查询 |
 
 ## 安全边界（必须遵守）
 

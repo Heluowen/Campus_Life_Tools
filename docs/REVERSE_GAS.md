@@ -21,10 +21,10 @@ Authorization: Bearer <token>
 
 | 字段 | 说明 |
 |---|---|
-| `savingSum` | **气费余额（元）**，本次抓包为 `96.35` |
+| `savingSum` | **气费余额（元）**，示例 `96.35` |
 | `chargeType` | `prepay`（预存） |
-| `subsCode` | 户号（如 1800150223） |
-| `readingRptList[0].currReading` | 燃气表读数（本次 1468） |
+| `subsCode` | 户号（如 `1800******`） |
+| `readingRptList[0].currReading` | 燃气表读数（示例 `1468`） |
 | `resultCode` | `"0"` 成功 |
 
 **关联接口**（首次配置时可用）：
@@ -106,10 +106,10 @@ POST /vcc-oauth/oauth/authorize2/refreshToken?clientid=<ch>&timestamp=<ms>&sign=
 `vcc-cbs` 的业务请求（如 `charge/preCheck`）的 `Authorization` 头就是它当时
 正用的有效 access token，可以直接提取恢复查询：
 
-`ash
-python tools/harvest_gas_token.py water_5.chls            # 只打印
-python tools/harvest_gas_token.py water_5.chls --write    # 直接写 .env
-`
+``ash
+python tools/harvest_creds.py capture.chls --write        # 一键提取电费+燃气全部凭据并写 .env
+python tools/harvest_gas_token.py water_5.chls --write    # 仅提取燃气 Bearer token
+``
 
 注意：这只是"应急恢复"，token 约 2 小时后仍会过期；长期自动续期需要抓到一次
 `refreshToken` 或 `accessToekn` 请求（页面在 token 过期或重新登录时才会发出，

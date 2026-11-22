@@ -9,13 +9,18 @@ access token。可直接写回 .env 的 GAS_TOKEN 恢复燃气查询。
 
     --write  提取成功后直接写入项目 .env 的 GAS_TOKEN
 """
-import sys
 import os
+import sys
+from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+_TOOLS_DIR = str(Path(__file__).resolve().parent)
+_BASE_DIR = str(Path(__file__).resolve().parent.parent)
+for _p in (_TOOLS_DIR, _BASE_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
-import chls_dump as C
-import extract as E
+import chls_dump as C  # noqa: E402
+import extract as E  # noqa: E402
 
 
 def hdr_map(reqh):
