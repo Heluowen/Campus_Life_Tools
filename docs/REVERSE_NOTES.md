@@ -112,4 +112,12 @@ python tools/extract.py <file.chls>
 - 精确 TTL 校准：`tools/ttl_probe.py`（拿到新鲜凭据后运行，输出 TTL ≈ X 分钟，据此定 interval ≈ TTL/2）
 - 已知风险：高频请求可能触发接口风控；电脑休眠/断网后会话失效需重新抓包。
 
+## 8. 重新抓包要点（2026-11-22 实测教训）
+
+- 电费 `B2CMainPlat_00`（TXCODE=YJF004）除 `SKEY`/`USERID`/`roomid` 外，**必须带会话 Cookie `CCBIBS1`**（登录后由 `CCBYXEncryptSerReqServlet` 页面种下）。
+  只带 `IN001=1001|awLYx` 会返回 `status=1` + `ERRORCODE=0130Z1108006 该页面为历史页面，请关闭浏览器重新登录`。
+- 抓包时 Charles 需对 `app.xiaoyuan.ccb.com:443`（及 IP `42.201.64.127:443`）开启 SSL Proxying；
+  若 History 里该域名只有 `CONNECT` 隧道（内容为 `17 03 03` 开头的 TLS 字节），说明没解密成功。
+- 微信自身流量（`szextshort.weixin.qq.com` 的 `POST /mmtls/...`，`Upgrade: mmtls`）是 WeChat 私有加密，抓包中大量出现属正常噪声，与电费无关。
+
 
