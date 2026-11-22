@@ -95,3 +95,18 @@ POST /vcc-oauth/oauth/authorize2/refreshToken?clientid=<ch>&timestamp=<ms>&sign=
 - `query_gas.py`：查询遇 `20001` 自动调刷新接口 → 新 token 对通过回调写回 `.env`
   （`GAS_TOKEN` + `GAS_REFRESH_TOKEN` 同步轮换）→ 重试查询
 - 实测：故意放无效 token → 自动换新 → 查询成功 ✅
+
+## 6. 应急：从抓包提取有效 token（工具）
+
+如果抓包中**没有** token 交换请求（accessToekn / refreshToken），页面实际发往
+`vcc-cbs` 的业务请求（如 `charge/preCheck`）的 `Authorization` 头就是它当时
+正用的有效 access token，可以直接提取恢复查询：
+
+`ash
+python tools/harvest_gas_token.py water_5.chls            # 只打印
+python tools/harvest_gas_token.py water_5.chls --write    # 直接写 .env
+`
+
+注意：这只是"应急恢复"，token 约 2 小时后仍会过期；长期自动续期需要抓到一次
+`refreshToken` 或 `accessToekn` 请求（页面在 token 过期或重新登录时才会发出，
+此时用 Charles 打开燃气页即可抓到）。
