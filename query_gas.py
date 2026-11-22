@@ -144,13 +144,30 @@ def query_gas(
     refresh_token: str = "",
     clientid: str = "",
     on_token_refreshed=None,
+    token_issued_at: float = 0.0,
+    refresh_age: float = 5400.0,
 ) -> GasResult:
     """查询燃气余额（元）。
 
     token 过期（20001）时：若配置了 refresh_token + clientid，先调 vcc-oauth
     refreshToken 换新 token 对（回调 on_token_refreshed(access, refresh) 持久化
     到 .env），再重试一次；刷新失败则抛 GasAuthExpiredError 提示重新抓包。
+
+    主动续期：若传入 token_issued_at（epoch 秒）且距签发已超过 refresh_age
+    （默认 5400s=90 分钟，token 总有效期 7200s），查询前先刷新一次，避免
+    access token 与 refresh_token 同时过期导致续期链断裂。
     """
+    # 主动续期：临近过期先换 token
+    if token_issued_at > 0 and (time.time() - token_issued_at) >= refresh_age:
+        pair = _refresh_tokens(clientid, refresh_token, timeout, trust_env)
+        if pair:
+            token, refresh_token = pair
+            if on_token_refreshed is not None:
+                try:
+                    on_token_refreshed(token, refresh_token)
+                except Exception:  # noqa: BLE001
+                    pass
+
     url = f"{GAS_HOST}/nv1/vcc-cbs/charge/preCheck?subsId={subsid}"
     attempts = 1 + max(0, min(int(max_retries), 2))
 

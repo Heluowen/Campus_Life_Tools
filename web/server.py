@@ -56,6 +56,15 @@ def _set_env_value(key: str, value: str) -> None:
     env_path.write_text("\n".join(out).rstrip("\n") + "\n", encoding="utf-8")
 
 
+def _persist_gas_tokens(access: str, refresh: str) -> None:
+    """燃气 token 刷新后持久化到 .env（含签发时间，供主动续期判断）。"""
+    import time as _time
+
+    _set_env_value("GAS_TOKEN", access)
+    _set_env_value("GAS_REFRESH_TOKEN", refresh)
+    _set_env_value("GAS_TOKEN_ISSUED_AT", str(int(_time.time())))
+
+
 def _status_payload() -> dict:
     settings = load_settings()
     state = _load_state()
@@ -99,7 +108,8 @@ def _apply_gas(settings, state: dict, now) -> dict | None:
             settings.gas.cookie,
             refresh_token=settings.gas.refresh_token,
             clientid=settings.gas.clientid,
-            on_token_refreshed=lambda a, r: (update_env("GAS_TOKEN", a), update_env("GAS_REFRESH_TOKEN", r)),
+            token_issued_at=settings.gas.token_issued_at,
+            on_token_refreshed=_persist_gas_tokens,
         )
         state.pop("gas_last_error", None)
         state["gas_balance"] = round(gas.balance, 2)

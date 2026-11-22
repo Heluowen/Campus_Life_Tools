@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -36,6 +37,13 @@ EXIT_ERROR = 1
 EXIT_CONFIG = 2
 EXIT_AUTH_EXPIRED = 3
 EXIT_QUERY_FAILED = 4
+
+
+def _on_gas_token_refreshed(access: str, refresh: str) -> None:
+    """燃气 token 刷新后持久化到 .env（含签发时间，供主动续期判断）。"""
+    update_env("GAS_TOKEN", access)
+    update_env("GAS_REFRESH_TOKEN", refresh)
+    update_env("GAS_TOKEN_ISSUED_AT", str(int(time.time())))
 
 AUTH_ALERT_COOLDOWN = timedelta(hours=1)   # 登录失效提醒冷却（保活模式下防刷屏）
 ERROR_ALERT_COOLDOWN = timedelta(hours=1)  # 查询失败提醒冷却
@@ -248,7 +256,8 @@ def _run_gas(settings: Settings, dry_run: bool = False) -> int:
             gas.cookie,
             refresh_token=gas.refresh_token,
             clientid=gas.clientid,
-            on_token_refreshed=lambda a, r: (update_env("GAS_TOKEN", a), update_env("GAS_REFRESH_TOKEN", r)),
+            token_issued_at=gas.token_issued_at,
+            on_token_refreshed=_on_gas_token_refreshed,
         )
     except GasAuthExpiredError as exc:
         print(f"[GAS-AUTH-EXPIRED] {_fmt_time(now)} {exc}")

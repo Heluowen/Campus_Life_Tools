@@ -94,7 +94,11 @@ POST /vcc-oauth/oauth/authorize2/refreshToken?clientid=<ch>&timestamp=<ms>&sign=
 ### 工程实现
 - `query_gas.py`：查询遇 `20001` 自动调刷新接口 → 新 token 对通过回调写回 `.env`
   （`GAS_TOKEN` + `GAS_REFRESH_TOKEN` 同步轮换）→ 重试查询
-- 实测：故意放无效 token → 自动换新 → 查询成功 ✅
+- **主动续期**：`.env` 额外记录 `GAS_TOKEN_ISSUED_AT`（签发时间 epoch 秒），
+  查询前若 token 已用超过 5400s（90 分钟，总有效期 7200s）就先刷新一次，
+  避免 access_token 与 refresh_token 同时过期导致续期链断裂
+- 实测：故意放无效 token → 自动换新 → 查询成功 ✅；
+  时效模拟（签发时间拨回 100 分钟）→ 自动主动刷新 → 查询成功 ✅
 
 ## 6. 应急：从抓包提取有效 token（工具）
 

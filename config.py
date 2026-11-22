@@ -113,6 +113,7 @@ class GasSettings:
     warn_threshold: float = 15.0
     refresh_token: str = ""  # vcc-oauth refresh_token（可自动续期 access_token）
     clientid: str = ""  # vcc-oauth channel（如 pe92a8wechat11301DY0105）
+    token_issued_at: float = 0.0  # access_token 签发时间（epoch 秒），用于主动续期判断
 
 
 def update_env(key: str, value: str) -> None:
@@ -244,6 +245,7 @@ def load_settings() -> Settings:
         warn_threshold=_float("GAS_WARN_THRESHOLD", 15.0),
         refresh_token=_raw("GAS_REFRESH_TOKEN"),
         clientid=_raw("GAS_CLIENTID"),
+        token_issued_at=_float("GAS_TOKEN_ISSUED_AT", 0.0),
     )
     if gas.enabled and gas.warn_threshold <= 0:
         raise ConfigError("GAS_WARN_THRESHOLD 必须大于 0")
