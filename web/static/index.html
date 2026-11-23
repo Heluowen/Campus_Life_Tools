@@ -104,6 +104,7 @@
   .chip{font-size:12px;padding:4px 10px;border-radius:999px;border:1px solid transparent;display:none;align-items:center;gap:6px}
   .chip.warn{display:inline-flex;background:rgba(251,191,36,.12);border-color:rgba(251,191,36,.3);color:#fbbf24}
   .chip.bad{display:inline-flex;background:rgba(248,113,113,.12);border-color:rgba(248,113,113,.35);color:#f87171}
+  .chip.info{display:inline-flex;background:rgba(167,139,250,.13);border-color:rgba(167,139,250,.32);color:#c4b5fd}
 
   footer{text-align:center;font-size:12px;color:var(--faint);line-height:1.8;padding-top:4px}
   footer b{color:var(--muted);font-weight:600}
@@ -211,8 +212,10 @@
       </div>
       <div class="chips">
         <span class="chip bad" id="gasChipAuth" style="display:none">⚠️ 燃气 token 可能已失效（GAS_TOKEN），请点击右侧刷新或重新抓包</span>
+        <span class="chip info" id="gasChipMaint" style="display:none">🌙 港华每日 23:30–00:30 维护暂停查询，请稍候再试</span>
         <span class="chip warn" id="gasChipLow">⏳ 燃气余额低于提醒阈值</span>
       </div>
+      <div class="bal-sub" id="gasMaintNote" style="margin-top:8px;font-size:11.5px;color:var(--faint)">🕒 服务维护时段：每日 23:30–次日 00:30 暂停业务查询</div>
     </div>
     <div class="stats">
       <div class="stat"><span class="k">户号</span><span class="v" id="gasSubsCode">—</span></div>
@@ -272,9 +275,11 @@
 
 <div class="modal-mask" id="curlModal">
   <div class="modal">
-    <h3>通过 cURL 热更新凭据</h3>
-    <p>从 Charles / 抓包工具右键 <b>Copy cURL Request</b>（电费 YJF004 或燃气 preCheck/refreshToken 均可），粘贴到下方即可自动提取并写入本地 <code>.env</code>，无需重启面板或保活进程。</p>
-    <textarea id="curlInput" placeholder="curl -H 'Cookie: ...' --data 'TXCODE=YJF004&amp;SKEY=...&amp;USERID=...&amp;roomid=...' 'https://app.xiaoyuan.ccb.com/LHECISM/B2CMainPlat_00'"></textarea>
+    <h3>热更新凭据（cURL / 燃气响应 JSON）</h3>
+    <p>支持两种粘贴格式，无需重启面板或保活进程：<br>
+    1. <b>cURL 命令</b>：Charles 右键 <b>Copy cURL Request</b>（电费 <code>YJF004</code> 或燃气 <code>preCheck</code>）；<br>
+    2. <b>燃气 Token 响应 JSON</b>：直接粘贴 <code>accessToekn</code> / <code>refreshToken</code> 的 Response JSON（含 <code>access_token</code>、<code>refresh_token</code>）。</p>
+    <textarea id="curlInput" placeholder="粘贴 cURL 命令，或直接粘贴 {&quot;access_token&quot;:&quot;...&quot;,&quot;refresh_token&quot;:&quot;...&quot;,&quot;expires_in&quot;:7200}"></textarea>
     <div class="modal-actions">
       <button class="btn-ghost" id="cancelCurlBtn" type="button">取消</button>
       <button class="btn" id="submitCurlBtn" type="button" style="padding:8px 16px;font-size:13px"><span class="spin"></span>解析并更新</button>
@@ -374,7 +379,10 @@ function render(d) {
   const last = d.last_query_time ? new Date(d.last_query_time) : null;
   const expire = last && !Number.isNaN(last.getTime()) && (Date.now() - last.getTime() > EXPIRE_HINT_MS || d.level === "unknown");
   $("chipExpire").style.display = expire ? "inline-flex" : "none";
-  const authRecent = d.last_auth_error_at && new Date(d.last_auth_error_at).getTime() > Date.now() - 3600000;
+  const authErrTs = d.last_auth_error_at ? new Date(d.last_auth_error_at).getTime() : 0;
+  const lastOkTs = last && !Number.isNaN(last.getTime()) ? last.getTime() : 0;
+  // 只有「最近一次认证错误」比「最近一次成功查询」更新且在 1 小时内，才显示凭据失效标签
+  const authRecent = authErrTs > lastOkTs && authErrTs > Date.now() - 3600000;
   $("chipAuth").style.display = authRecent ? "inline-flex" : "none";
 
   // 燃气
@@ -400,6 +408,24 @@ function render(d) {
     // token 失效提示只在「最近一次燃气刷新失败」后显示（由 gasRefresh 控制），成功刷新后隐藏
     $("gasChipAuth").style.display = gasAuthHint ? "inline-flex" : "none";
     $("gasChipLow").style.display = (!Number.isNaN(gbal) && gbal < gw) ? "inline-flex" : "none";
+
+    // 港华维护时段判断（每日 23:30–次日 00:30，或后端刚收到 2000E1 维护响应）
+    const nowDt = new Date();
+    const mins = nowDt.getHours() * 60 + nowDt.getMinutes();
+    const inMaintWindow = mins >= 23 * 60 + 30 || mins < 30;
+    const maintObj = d.gas_maintenance;
+    const maintRecent = !!(maintObj && maintObj.time && (Date.now() - new Date(maintObj.time).getTime() < 75 * 60 * 1000));
+    const showMaint = inMaintWindow || maintRecent;
+    const maintChip = $("gasChipMaint");
+    if (maintChip) {
+      maintChip.textContent = "🌙 " + ((maintRecent && maintObj.message) ? maintObj.message : "港华每日 23:30–次日 00:30 暂停办理业务，维护期间暂停查询");
+      maintChip.style.display = showMaint ? "inline-flex" : "none";
+    }
+    const maintNote = $("gasMaintNote");
+    if (maintNote) {
+      const winText = d.gas_maintenance_window || "每日 23:30–次日 00:30";
+      maintNote.textContent = `🕒 服务维护时段：${winText} 暂停业务查询（维护期不触发故障告警）`;
+    }
     renderChart("gasChart");
   }
 
@@ -762,6 +788,12 @@ async function gasRefresh() {
     }
     render(body);
     if (body.gas_error) {
+      if (body.gas_error.error === "gas-maintenance") {
+        gasAuthHint = false;
+        $("gasChipAuth").style.display = "none";
+        toast("🌙 港华维护时段：" + (body.gas_error.message || "每日 23:30–次日 00:30 暂停办理业务"), "");
+        return;
+      }
       // 只有「燃气 token 失效」类错误才点亮 token 提示，其他错误只弹 toast
       gasAuthHint = body.gas_error.error === "gas-auth";
       $("gasChipAuth").style.display = gasAuthHint ? "inline-flex" : "none";
@@ -797,7 +829,7 @@ $("curlModal").addEventListener("click", (ev) => {
 });
 $("submitCurlBtn").addEventListener("click", async () => {
   const curl = $("curlInput").value.trim();
-  if (!curl) { toast("请先粘贴 cURL 命令", "err"); return; }
+  if (!curl) { toast("请先粘贴 cURL 命令或响应 JSON", "err"); return; }
   const btn = $("submitCurlBtn");
   btn.disabled = true; btn.classList.add("loading");
   try {

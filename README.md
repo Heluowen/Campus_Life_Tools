@@ -100,9 +100,9 @@ python web/server.py --port 8877
 |---|---|---|
 | 请求体 `USERID` | `CCB_USERID` | 建行校园一卡通用户编号 |
 | 请求体 `SKEY` | `CCB_SKEY` | 当前会话校验密钥（失效后需重新抓包） |
-| 请求体 `roomid` | `CCB_ROOMID` | 固化后的房间号，如 `134-33--250-501` |
+| 请求体 `roomid` | `CCB_ROOMID` | 固化后的房间号（来自抓包请求体 `roomid`） |
 | 请求头 `Cookie` | `CCB_COOKIE` | 完整 Cookie 串（可留空，失败时补全） |
-| — | `CCB_ROOM_NAME` | 推送展示名（可选，如 `40栋-501`） |
+| — | `CCB_ROOM_NAME` | 推送展示名（可选，如 `1栋-101`） |
 | — | `ELEC_PRICE` | 电费单价（元/度，用于折算剩余金额；0 或不填表示不折算） |
 | — | `WARN_THRESHOLD` / `CRITICAL_THRESHOLD` | 电费两级阈值，单位与 `meterflag` 一致（如度） |
 | 燃气 `preCheck` 的 `subsId` 参数 | `GAS_SUBSID` | 燃气户号内部 ID（填了它和 TOKEN 才启用燃气查询） |
@@ -149,7 +149,7 @@ pythonw keep_alive.py --once --log-file keepalive.log
 **Windows 计划任务（每 10 分钟，无黑窗）**：计划任务直接调用 `pythonw.exe`，不经过 `cmd`，因此不会有任何控制台窗口闪烁或停留：
 
 ```powershell
-schtasks /Create /TN "ElecKeepAlive" /SC MINUTE /MO 10 /RL LIMITED /F /TR "\"H:\AstrBot\backend\python\pythonw.exe\" \"H:\Deepseek-Harness\Zone_2\campus-elec-monitor\keep_alive.py\" --once --log-file \"H:\Deepseek-Harness\Zone_2\campus-elec-monitor\keepalive.log\""
+schtasks /Create /TN "ElecKeepAlive" /SC MINUTE /MO 10 /RL LIMITED /F /TR "\"<PATH_TO_PYTHONW>\" \"<PROJECT_DIR>\keep_alive.py\" --once --log-file \"<PROJECT_DIR>\keepalive.log\""
 ```
 
 > 如果坚持用 `cmd/bat` 方式启动，可给 `keep_alive.py` 加 `--hide-console` 参数（隐藏并自动关闭控制台窗口），但不经 cmd 直接调用 pythonw 是最彻底的无窗口方案。

@@ -39,7 +39,7 @@
 
 ### 1.4 wxapkg 小程序包
 
-- 本机微信缓存 `H:\heluo\Documents\WeChat Files\Applet` 下 47 个包**全部为 `V1MMWX` 加密格式**（微信 4.x）
+- 本机微信缓存 `<WeChat Files>\Applet` 下 47 个包**全部为 `V1MMWX` 加密格式**（微信 4.x）
 - 解密依赖微信内部密钥，本地无法离线解包 → **无法反编译小程序 JS 查看 ccbParam 生成逻辑**
 
 ## 2. 结论：纯 HTTP 静默刷新不可行

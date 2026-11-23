@@ -28,6 +28,10 @@ class GasQueryError(Exception):
     """燃气查询失败：网络异常、非预期状态码或响应解析失败。"""
 
 
+class GasMaintenanceError(GasQueryError):
+    """燃气服务端处于维护/暂停办理窗口（如港华每日 23:30–次日 00:30 日结）。"""
+
+
 @dataclass
 class GasResult:
     balance: float  # 元
@@ -68,8 +72,20 @@ def _parse_gas(resp: httpx.Response) -> GasResult:
     data = payload.get("datas")
     if not isinstance(data, dict):
         raise GasQueryError("响应缺少 datas 对象，无法解析气费余额")
+
+    # 港华在每日 23:30~次日 00:30 维护窗口期，外层仍返回 resultCode="0"，
+    # 但会在 datas 内带 errorCode="2000E1" / errorTitle="暂停办理业务" / errorMsg=... 且 savingSum=null
+    inner_code = str(data.get("errorCode") or "").strip()
+    inner_title = str(data.get("errorTitle") or "").strip()
+    inner_msg = str(data.get("errorMsg") or "").strip()
     saving = data.get("savingSum")
     if saving is None or str(saving).strip() == "":
+        if inner_code or inner_msg or inner_title:
+            detail = inner_msg or inner_title or inner_code
+            hint_text = f"{inner_code} {inner_title} {inner_msg}"
+            if inner_code == "2000E1" or any(k in hint_text for k in ("暂停办理", "维护", "日结", "稍候")):
+                raise GasMaintenanceError(detail)
+            raise GasQueryError(f"燃气接口提示：{detail}（errorCode={inner_code or '未知'}）")
         raise GasQueryError("响应缺少 savingSum（气费余额）字段")
     try:
         balance = float(str(saving).replace(",", "").strip())

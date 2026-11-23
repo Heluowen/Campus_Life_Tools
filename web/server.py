@@ -59,6 +59,8 @@ def _status_payload() -> dict:
         "gas_subs_code": state.get("gas_subs_code") or "",
         "gas_meter_reading": state.get("gas_meter_reading"),
         "gas_last_auth_error_at": state.get("gas_last_auth_error_at"),
+        "gas_maintenance": state.get("gas_maintenance"),
+        "gas_maintenance_window": "每日 23:30–次日 00:30",
         "gas_history": state.get("gas_history") or [],
         "server_time": m._now(settings).strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -99,15 +101,15 @@ def _query_gas_only() -> dict:
     return payload
 
 
-def _import_curl(curl_text: str) -> dict:
-    """从粘贴的 cURL 文本提取电费/燃气凭据并热更新 .env（若更新了电费凭据则清理旧 cookies.json）。"""
+def _import_curl(raw_text: str) -> dict:
+    """从粘贴的 cURL 命令或港华 OAuth 响应 JSON 提取电费/燃气凭据并热更新 .env。"""
     if str(TOOLS_DIR) not in sys.path:
         sys.path.insert(0, str(TOOLS_DIR))
-    from harvest_creds import parse_curl  # noqa: PLC0415
+    from harvest_creds import parse_input  # noqa: PLC0415
 
-    extracted = parse_curl(curl_text)
+    extracted = parse_input(raw_text)
     if not extracted:
-        raise ValueError("未能从 cURL 中识别出电费（YJF004）或燃气（towngasvcc）凭据")
+        raise ValueError("未能识别出电费（YJF004 cURL）或燃气（towngasvcc cURL / access_token 响应 JSON）凭据")
 
     update_env_many(extracted)
     if any(k in extracted for k in ("CCB_SKEY", "CCB_COOKIE")):

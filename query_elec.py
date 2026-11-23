@@ -39,7 +39,22 @@ DEFAULT_USER_AGENT = (
 )
 
 _RETRY_DELAY = 2.0  # 重试间隔（秒），避免连续请求触发接口风控
-_AUTH_MARKERS = ("登录", "失效", "过期", "未登录", "session", "token", "logout")
+_AUTH_MARKERS = (
+    "登录",
+    "失效",
+    "过期",
+    "未登录",
+    "自动退出",
+    "历史页面",
+    "较长时间未进行操作",
+    "session",
+    "token",
+    "logout",
+)
+# 建行 B2C 网关已知的会话失效错误码：
+# 0130Z1108912 = 较长时间未进行操作，系统已自动退出
+# 0130Z1108006 = 该页面为历史页面，请关闭浏览器重新登录（缺少或失效的 CCBIBS1）
+_AUTH_ERROR_CODES = ("0130Z1108912", "0130Z1108006")
 
 
 class AuthExpiredError(Exception):
@@ -180,11 +195,22 @@ def _parse_response(resp: httpx.Response) -> QueryResult:
         raise QueryError("响应 JSON 顶层不是对象，无法解析余额")
 
     status = str(payload.get("status", "")).strip()
-    msg = str(payload.get("msg", "")).strip()
+    msg = str(
+        payload.get("msg")
+        or payload.get("ERRORMSG")
+        or payload.get("errorMsg")
+        or ""
+    ).strip()
+    err_code = str(
+        payload.get("ERRORCODE")
+        or payload.get("errorCode")
+        or ""
+    ).strip()
     if status != "0":
-        if _msg_looks_auth(msg):
-            raise AuthExpiredError(f"status={status!r}，msg={msg!r}（疑似登录失效或会话过期）")
-        raise QueryError(f"接口返回失败：status={status!r}，msg={msg!r}")
+        code_suffix = f"，ERRORCODE={err_code!r}" if err_code else ""
+        if err_code in _AUTH_ERROR_CODES or _msg_looks_auth(msg):
+            raise AuthExpiredError(f"status={status!r}{code_suffix}，msg={msg!r}（登录态失效或会话过期）")
+        raise QueryError(f"接口返回失败：status={status!r}{code_suffix}，msg={msg!r}")
 
     data = payload.get("data")
     if not isinstance(data, dict):

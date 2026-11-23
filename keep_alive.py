@@ -31,8 +31,13 @@ import main as m
 
 BASE_DIR = Path(__file__).resolve().parent
 LOCK_FILE = BASE_DIR / "keepalive.lock"
+PID_FILE = BASE_DIR / "keepalive.pid"
 LOG_FILE: Path | None = None
 _LOCK_FH = None
+# Windows msvcrt.locking 是强制字节范围锁；同时 Windows 读工具（cmd for /f、Get-Content）
+# 常按 4KB+ 缓冲区读取，会触碰到同一文件内的锁定字节。
+# 因此锁文件（keepalive.lock）专用于 OS 内核互斥，PID 单独明文写入 keepalive.pid 供 stop.bat 安全读取。
+_WIN_LOCK_OFFSET = 0
 
 
 def _get_console_hwnd() -> int:
@@ -95,7 +100,7 @@ def _acquire_lock() -> bool:
         if os.name == "nt":
             import msvcrt
 
-            fh.seek(0)
+            fh.seek(_WIN_LOCK_OFFSET)
             msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
         else:
             import fcntl
@@ -108,8 +113,12 @@ def _acquire_lock() -> bool:
     try:
         fh.seek(0)
         fh.truncate()
-        fh.write(str(os.getpid()))
+        fh.write(f"{os.getpid()}\n")
         fh.flush()
+    except OSError:
+        pass
+    try:
+        PID_FILE.write_text(f"{os.getpid()}\n", encoding="utf-8")
     except OSError:
         pass
     _LOCK_FH = fh
@@ -125,7 +134,7 @@ def _release_lock() -> None:
             if os.name == "nt":
                 import msvcrt
 
-                fh.seek(0)
+                fh.seek(_WIN_LOCK_OFFSET)
                 msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
             else:
                 import fcntl
@@ -137,11 +146,12 @@ def _release_lock() -> None:
             fh.close()
         except OSError:
             pass
-    try:
-        if LOCK_FILE.exists():
-            LOCK_FILE.unlink()
-    except OSError:
-        pass
+    for path in (PID_FILE, LOCK_FILE):
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError:
+            pass
 
 
 def main() -> int:
@@ -174,21 +184,34 @@ def main() -> int:
     _log(f"保活启动：间隔 {args.interval}s" + (f"，运行至 {deadline:%Y-%m-%d %H:%M}" if deadline else "，无限运行"))
     try:
         while True:
+            detail_parts: list[str] = []
             try:
                 settings = load_settings()
-                code = m.run_once(settings, dry_run=False, respect_gas_interval=True)
+                elec_code, elec_err = m.fetch_and_update_elec(settings, dry_run=False, notify=True)
+                codes = [elec_code]
+                if elec_err:
+                    detail_parts.append(f"电费({elec_err.get('error')}): {elec_err.get('message')}")
+                if settings.gas.enabled:
+                    gas_code, gas_err = m.fetch_and_update_gas(
+                        settings, dry_run=False, notify=True, respect_interval=True
+                    )
+                    codes.append(gas_code)
+                    if gas_err:
+                        detail_parts.append(f"燃气({gas_err.get('error')}): {gas_err.get('message')}")
+                code = m._worst_code(*codes)
             except ConfigError as exc:
                 _log(f"配置错误：{exc}")
                 code = m.EXIT_CONFIG
 
+            detail = f" | {' ; '.join(detail_parts)}" if detail_parts else ""
             if code == m.EXIT_OK:
-                _log("查询成功")
+                _log(f"查询成功{detail}")
             elif code == m.EXIT_AUTH_EXPIRED:
-                _log("会话已失效（需重新抓包更新 .env）")
+                _log(f"会话已失效（需重新抓包更新 .env）{detail}")
             elif code == m.EXIT_QUERY_FAILED:
-                _log("查询失败（将按间隔重试）")
+                _log(f"查询失败（将按间隔重试）{detail}")
             else:
-                _log(f"本次结束 code={code}")
+                _log(f"本次结束 code={code}{detail}")
 
             if args.once:
                 _log("--once 已执行一次，退出")

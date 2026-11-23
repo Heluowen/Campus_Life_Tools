@@ -119,6 +119,50 @@ def _extract_from_request(
     return out
 
 
+def parse_token_json(text: str) -> dict[str, str]:
+    """解析港华 vcc-oauth accessToekn / refreshToken 的响应 JSON。
+
+    支持顶层或 data 内层包含 access_token / refresh_token（以及可选 clientid / subsId）。
+    """
+    stripped = text.strip()
+    if not stripped.startswith("{"):
+        return {}
+    try:
+        obj = json.loads(stripped)
+    except ValueError:
+        return {}
+    if not isinstance(obj, dict):
+        return {}
+    inner = obj.get("data") if isinstance(obj.get("data"), dict) else {}
+    out: dict[str, str] = {}
+    access = obj.get("access_token") or inner.get("access_token")
+    refresh = obj.get("refresh_token") or inner.get("refresh_token")
+    if access and str(access).strip():
+        out["GAS_TOKEN"] = str(access).strip()
+        out["GAS_TOKEN_ISSUED_AT"] = str(int(time.time()))
+    if refresh and str(refresh).strip():
+        out["GAS_REFRESH_TOKEN"] = str(refresh).strip()
+    clientid = obj.get("clientid") or inner.get("clientid")
+    if clientid and str(clientid).strip():
+        out["GAS_CLIENTID"] = str(clientid).strip()
+    subsid = obj.get("subsId") or inner.get("subsId")
+    if subsid and str(subsid).strip():
+        out["GAS_SUBSID"] = str(subsid).strip()
+    return out
+
+
+def parse_input(text: str) -> dict[str, str]:
+    """统一解析粘贴内容：自动识别港华 OAuth 响应 JSON 或 cURL 命令。"""
+    stripped = text.strip()
+    if not stripped:
+        return {}
+    if stripped.startswith("{"):
+        got = parse_token_json(stripped)
+        if got:
+            return got
+    return parse_curl(stripped)
+
+
 def parse_curl(curl_text: str) -> dict[str, str]:
     """解析常见浏览器/Charles 导出的 cURL（bash / PowerShell / cmd 续行格式）。"""
     # 处理反斜杠、脱字符(^)和反引号(`)换行续接
@@ -181,13 +225,61 @@ def parse_curl(curl_text: str) -> dict[str, str]:
     return _extract_from_request(url, headers, "&".join(body_parts))
 
 
+def _fallback_scan_chls(raw: bytes) -> dict[str, str]:
+    """当 chls_dump 解析某些 JDK 11+ Java 对象标签（如 StackTraceElement）失败时的兜底二进制扫描。"""
+    out: dict[str, str] = {}
+
+    # 1. 扫描港华燃气（towngasvcc）
+    if b"towngasvcc" in raw:
+        bearers = re.findall(rb"Bearer ([0-9a-fA-F]{20,64})", raw)
+        if bearers:
+            out["GAS_TOKEN"] = bearers[-1].decode("ascii")
+        subs = re.findall(rb"subsId=([0-9a-zA-Z]{8,64})", raw)
+        if subs:
+            out["GAS_SUBSID"] = subs[-1].decode("ascii")
+        cids = re.findall(rb"clientid=([0-9a-zA-Z_\-]{6,64})", raw)
+        if cids:
+            out["GAS_CLIENTID"] = cids[-1].decode("ascii")
+        tickets = re.findall(rb"__h5_oauth_ticket__=([^;\x00-\x1f\r\n]+)", raw)
+        if tickets:
+            out["GAS_COOKIE"] = f"__h5_oauth_ticket__={tickets[-1].decode('latin1')}"
+        for m_json in re.finditer(rb"\{[^{}]{0,400}\"refresh_token\"[^{}]{0,400}\}", raw):
+            try:
+                j = json.loads(m_json.group(0).decode("utf-8", errors="ignore"))
+            except ValueError:
+                continue
+            if isinstance(j, dict):
+                if j.get("access_token"):
+                    out["GAS_TOKEN"] = str(j["access_token"])
+                    out["GAS_TOKEN_ISSUED_AT"] = str(int(time.time()))
+                if j.get("refresh_token"):
+                    out["GAS_REFRESH_TOKEN"] = str(j["refresh_token"])
+
+    # 2. 扫描建行电费（TXCODE=YJF004）
+    for m_form in re.finditer(rb"[^\x00-\x1f\"'<>]{0,200}TXCODE=YJF004[^\x00-\x1f\"'<>]{0,300}", raw):
+        body = m_form.group(0).decode("latin1")
+        form = parse_qs(body, keep_blank_values=False)
+        if form.get("USERID") and form.get("SKEY") and form.get("roomid"):
+            out["CCB_USERID"] = form["USERID"][0]
+            out["CCB_SKEY"] = form["SKEY"][0]
+            out["CCB_ROOMID"] = form["roomid"][0]
+            if form.get("BRANCHID"):
+                out["CCB_BRANCHID"] = form["BRANCHID"][0]
+
+    return out
+
+
 def harvest_chls(path: str | Path) -> dict[str, str]:
     """解析 Charles .chls 文件，按时间顺序覆盖提取最新一组电费与燃气凭据。"""
     import chls_dump as C  # noqa: PLC0415
     import extract as E  # noqa: PLC0415
 
     data = Path(path).read_bytes()
-    objs = C.Reader(data).read_top()
+    try:
+        objs = C.Reader(data).read_top()
+    except Exception:  # noqa: BLE001 - 部分 Charles 抓包含 JDK 11+ 异常对象，自动回退原始流扫描
+        return _fallback_scan_chls(data)
+
     txs = []
     for o in objs:
         E.walk(o, txs)
@@ -202,14 +294,20 @@ def harvest_chls(path: str | Path) -> dict[str, str]:
         if not isinstance(reqh, dict):
             continue
         first_line = E.plain_val(reqh.get("firstLine")) or ""
-        parts = str(first_line).split()
-        req_target = parts[1] if len(parts) >= 2 else ""
+        headers = _header_map_from_tx(reqh)
+        req_target = ""
+        if isinstance(first_line, str) and first_line.strip():
+            parts = first_line.split()
+            req_target = parts[1] if len(parts) >= 2 else ""
+        # HTTP/2 事务在 Charles 中没有传统 HTTP/1.1 firstLine，请求路径在 :path 伪头中
+        if not req_target:
+            req_target = headers.get(":path") or str(E.plain_val(f.get("pathName")) or "")
         if req_target.startswith(("http://", "https://")):
             url = req_target
         else:
-            scheme = E.plain_val(f.get("protocol")) or "https"
-            url = f"{scheme}://{hostname}{req_target}"
-        headers = _header_map_from_tx(reqh)
+            scheme = headers.get(":scheme") or E.plain_val(f.get("protocol")) or "https"
+            authority = headers.get(":authority") or hostname
+            url = f"{scheme}://{authority}{req_target}"
         req_body = E.body_text(f.get("requestBody")) or ""
         resp_body = E.body_text(f.get("responseBody")) or ""
         extracted = _extract_from_request(url, headers, req_body, resp_body)
@@ -235,9 +333,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.curl_stdin:
-        extracted = parse_curl(sys.stdin.read())
+        extracted = parse_input(sys.stdin.read())
     elif args.curl:
-        extracted = parse_curl(Path(args.curl).read_text(encoding="utf-8"))
+        extracted = parse_input(Path(args.curl).read_text(encoding="utf-8"))
     elif args.chls_file:
         extracted = harvest_chls(args.chls_file)
     else:

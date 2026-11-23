@@ -32,9 +32,9 @@
 | `tools/gas_js/{app.js,croods.js,vendors.js}` | **删除** | 从 Git 追踪和工作区彻底移除第三方商业前端 bundle（共约 2.7 MB），逆向结论已保留在 `docs/REVERSE_GAS.md`。 |
 | `.gitignore` | 修改 | 新增忽略规则 `tools/gas_js/`。 |
 | `.gitattributes` | **新增** | 声明 `*.bat text eol=crlf`，防止 Windows 批处理因 LF 换行符导致 `cmd.exe` 解析报错。 |
-| `start.bat` | 修改 | ① 移除硬编码路径 `H:\AstrBot\backend\python\pythonw.exe`，改为按 `.venv → venv → %PYTHONW_EXE% → PATH` 自动探测；② 添加 `chcp 65001`；③ 移除不可靠的 `if exist keepalive.lock` 判断，交由 `keep_alive.py` 内核文件锁互斥；④ 扁平化 `if` 结构并统一 CRLF。 |
+| `start.bat` | 修改 | ① 移除本机硬编码 Python 绝对路径，改为按 `.venv → venv → %PYTHONW_EXE% → PATH` 自动探测；② 添加 `chcp 65001`；③ 移除不可靠的 `if exist keepalive.lock` 判断，交由 `keep_alive.py` 内核文件锁互斥；④ 扁平化 `if` 结构并统一 CRLF。 |
 | `stop.bat` | 修改 | 添加 `chcp 65001`，`for /f` 改用 `usebackq` 安全读取带引号路径，统一 CRLF。 |
-| `tools/extract.py` | 修改 | 移除硬编码 `H:\Deepseek-Harness\Zone_2\...`，改为 `Path(__file__).resolve().parent`。 |
+| `tools/extract.py` | 修改 | 移除本机硬编码绝对路径，改为 `Path(__file__).resolve().parent`。 |
 | `tools/harvest_gas_token.py` | 修改 | 补齐 `tools/` 与项目根目录到 `sys.path`，支持任意工作目录或模块方式导入调用。 |
 | `docs/REVERSE_GAS.md` | 修改 | 脱敏示例户号；修复文末受损的代码块标记（原文件含 `\x08` 退格符导致 `` ` ash ``）；补充 `harvest_creds.py` 用法。 |
 
@@ -135,3 +135,27 @@
 1. **同步远端**：在 `Zone_2/campus-elec-monitor` 执行 `git pull` 前，请留意本地未被追踪的 `.env` / `state.json` / `cookies.json` 已在 `.gitignore` 中，不会被覆盖；但原已跟踪的 `tools/gas_js/` 会在 pull 后被 Git 从工作区移除（如需保留分析请先备份到仓库外）。
 2. **新增数据源（如水费）建议**：后续按 `campus_life_opensource_plan.md` 拆分 `sources/` 插件架构时，可直接在现有 `main.py` 的 `fetch_and_update_*` 范式基础上抽象 `Source` 协议，并继续保留 `_STATE_LOCK`、`_append_history()` 和 `respect_interval` 节流能力。
 3. **测试门禁**：修改核心逻辑后建议直接运行 `pytest -v tests` 验证离线回归。
+
+---
+
+## 5. 增量更新记录（2026-11-23）
+
+在 `70b7cac` 基础上补充完成以下修复与增强（`pytest -v tests` — **14 passed**）：
+
+1. **港华维护窗口精准识别与前端展示**（`query_gas.py` / `main.py` / `web/server.py` / `web/static/index.html`）
+   - 识别港华每日 `23:30–次日 00:30` 维护响应（外层 `resultCode="0"`，内层 `datas.errorCode="2000E1"` / `errorMsg="每日23:30至次日00:30暂停办理此业务..."` 且 `savingSum=null`），抛出专用 `GasMaintenanceError`；
+   - 维护窗口期间记录 `state["gas_maintenance"]` 并返回 `EXIT_OK`，不触发半夜故障推送；
+   - Web 燃气卡片新增常驻维护时段小字说明与维护期柔和紫色胶囊提示。
+2. **建行电费大写 `ERRORCODE` / `ERRORMSG` 认证失效识别**（`query_elec.py`）
+   - 修复建行返回 `status="1", msg="", ERRORCODE="0130Z1108912", ERRORMSG="您已较长时间未进行操作..."` 时被误判为普通 `QueryError` 的问题；现正确识别 `ERRORMSG`、`ERRORCODE`（含 `0130Z1108912`、`0130Z1108006`）并抛出 `AuthExpiredError`。
+3. **修复 Windows 下 `stop.bat` 无法读取被锁文件的问题 + 日志增强**（`keep_alive.py` / `stop.bat` / `.gitignore`）
+   - 拆分 OS 内核互斥锁文件（`keepalive.lock`）与可读 PID 文件（`keepalive.pid`），解决 Windows 强制字节锁导致 `stop.bat` 读取 PID 报拒绝访问的问题；
+   - `keepalive.log` 在每轮失败或失效时追加电费/燃气具体错误摘要，便于快速定位网络波动与过期原因。
+4. **修复查询成功后 Web 面板残留「凭据失效」红标签**（`main.py` / `web/static/index.html`）
+   - 电费/燃气查询成功后自动清除 `last_auth_error_at` / `gas_last_auth_error_at`；前端同步增加 `last_auth_error_at > last_query_time` 时序判断。
+5. **凭据提取工具与 Web 热更新弹窗增强**（`tools/harvest_creds.py` / `web/server.py` / `web/static/index.html`）
+   - `.chls` 解析支持 HTTP/2 `:path` 伪头，并在 `chls_dump` 遇到 JDK 11+ 异常对象无法反序列化时自动降级为二进制流兜底扫描；
+   - Web 弹窗 `POST /api/import_curl` 现同时支持粘贴 **cURL 命令**与**港华 `accessToekn` / `refreshToken` 响应 JSON**（自动写入 `GAS_TOKEN`、`GAS_REFRESH_TOKEN`、`GAS_TOKEN_ISSUED_AT`）。
+6. **隐私与示例脱敏**（`.env.example` / `config.py` / `README.md` / `docs/REVERSE_NOTES.md` / `docs/CHANGELOG_SYNC.md`）
+   - 清除文档与配置模板中残留的具体宿舍房号示例与本机绝对路径。
+

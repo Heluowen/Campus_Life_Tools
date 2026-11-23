@@ -28,7 +28,7 @@ from pathlib import Path
 from config import ConfigError, Settings, load_settings, update_env_many
 from notifier import NotifyError, send_notification
 from query_elec import AuthExpiredError, QueryError, QueryResult, query_balance
-from query_gas import GasAuthExpiredError, GasQueryError, GasResult, query_gas
+from query_gas import GasAuthExpiredError, GasMaintenanceError, GasQueryError, GasResult, query_gas
 
 BASE_DIR = Path(__file__).resolve().parent
 STATE_FILE = BASE_DIR / "state.json"
@@ -295,6 +295,7 @@ def fetch_and_update_elec(
 
         if not dry_run:
             state.pop("last_error", None)
+            state.pop("last_auth_error_at", None)
             state["last_balance"] = round(result.balance, 2)
             state["last_query_time"] = now.isoformat()
             state["last_level"] = level
@@ -382,6 +383,16 @@ def fetch_and_update_gas(
                     print("[SKIP] 燃气失效提醒冷却中（1 小时），不重复推送")
             _save_state(state)
         return EXIT_AUTH_EXPIRED, err
+    except GasMaintenanceError as exc:
+        # 每日固定维护窗口（如 23:30-次日 00:30）：只记录状态不发故障推送，避免半夜误报骚扰
+        print(f"[GAS-MAINTENANCE] {_fmt_time(now)} {exc}")
+        err = {"error": "gas-maintenance", "message": str(exc)}
+        if not dry_run:
+            with _STATE_LOCK:
+                state = _load_state()
+                state["gas_maintenance"] = {"time": now.isoformat(), "message": str(exc)}
+                _save_state(state)
+        return EXIT_OK, err
     except GasQueryError as exc:
         print(f"[GAS-QUERY-FAILED] {_fmt_time(now)} {exc}")
         err = {"error": "gas-query", "message": str(exc)}
@@ -435,6 +446,8 @@ def fetch_and_update_gas(
 
         if not dry_run:
             state.pop("gas_last_error", None)
+            state.pop("gas_last_auth_error_at", None)
+            state.pop("gas_maintenance", None)
             state["gas_balance"] = round(result.balance, 2)
             state["gas_last_query_time"] = now.isoformat()
             state["gas_level"] = level

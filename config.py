@@ -227,7 +227,7 @@ def load_settings(env_path: Path | None = None) -> Settings:
     if not api.skey:
         raise ConfigError("缺少 CCB_SKEY：请在 .env 中填写当前会话校验密钥（抓包请求体 SKEY）")
     if not api.room_id:
-        raise ConfigError("缺少 CCB_ROOMID：请在 .env 中填写固化后的宿舍房间号（如 134-33--250-501）")
+        raise ConfigError("缺少 CCB_ROOMID：请在 .env 中填写固化后的宿舍房间号（抓包请求体 roomid）")
     if api.price < 0:
         raise ConfigError("ELEC_PRICE 不能为负数（0 表示不启用金额折算）")
 

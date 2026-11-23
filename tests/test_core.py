@@ -238,16 +238,137 @@ def test_concurrent_save_state_no_race(tmp_path: Path, monkeypatch: pytest.Monke
 
 def test_keepalive_file_lock_mutual_exclusion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ka, "LOCK_FILE", tmp_path / "keepalive.lock")
+    monkeypatch.setattr(ka, "PID_FILE", tmp_path / "keepalive.pid")
     assert ka._acquire_lock() is True
     try:
-        # 同一文件再次加锁必须失败（模拟第二个并发实例）
+        # PID 单独写入无锁的 keepalive.pid，确保 Windows 下 stop.bat / Get-Content 随时可读
+        pid_text = (tmp_path / "keepalive.pid").read_text(encoding="utf-8").strip()
+        assert pid_text == str(ka.os.getpid())
+        # 对 keepalive.lock 再次加锁必须失败（模拟第二个并发实例）
         if ka.os.name == "nt":
             import msvcrt
 
             with open(tmp_path / "keepalive.lock", "a+", encoding="utf-8") as fh2:
-                fh2.seek(0)
+                fh2.seek(ka._WIN_LOCK_OFFSET)
                 with pytest.raises(OSError):
                     msvcrt.locking(fh2.fileno(), msvcrt.LK_NBLCK, 1)
     finally:
         ka._release_lock()
     assert not (tmp_path / "keepalive.lock").exists()
+    assert not (tmp_path / "keepalive.pid").exists()
+
+
+def test_elec_auth_expired_uppercase_errorcode_and_errormsg() -> None:
+    import httpx
+
+    payload = {
+        "status": "1",
+        "msg": "",
+        "TXCODE": "YJF004",
+        "ERRORCODE": "0130Z1108912",
+        "ERRORMSG": "您已较长时间未进行操作，为保护您的资金安全，系统已自动退出。请关闭浏览器所有网页，重新登录。",
+    }
+    resp = httpx.Response(200, json=payload)
+    with pytest.raises(qe.AuthExpiredError, match="0130Z1108912"):
+        qe._parse_response(resp)
+
+    payload_hist = {
+        "status": "1",
+        "msg": "",
+        "ERRORCODE": "0130Z1108006",
+        "ERRORMSG": "该页面为历史页面，请关闭浏览器重新登录",
+    }
+    with pytest.raises(qe.AuthExpiredError, match="0130Z1108006"):
+        qe._parse_response(httpx.Response(200, json=payload_hist))
+
+
+def test_gas_maintenance_window_parsing_and_no_alert(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    monkeypatch.setattr(m, "STATE_FILE", tmp_path / "state.json")
+    s = _make_settings(tmp_path, PUSH_CHANNEL="bark", BARK_URL="https://api.day.app/test")
+
+    maint_payload = {
+        "resultCode": "0",
+        "datas": {
+            "errorCode": "2000E1",
+            "errorTitle": "暂停办理业务",
+            "errorMsg": "每日23:30至次日00:30暂停办理此业务，请稍候再来",
+            "savingSum": None,
+        },
+    }
+    resp = httpx.Response(200, json=maint_payload)
+    with pytest.raises(qg.GasMaintenanceError, match="23:30"):
+        qg._parse_gas(resp)
+
+    mock_push = mock.MagicMock(return_value=True)
+    monkeypatch.setattr(m, "send_notification", mock_push)
+    monkeypatch.setattr(
+        m,
+        "query_gas",
+        mock.MagicMock(side_effect=qg.GasMaintenanceError("每日23:30至次日00:30暂停办理此业务，请稍候再来")),
+    )
+
+    code, err = m.fetch_and_update_gas(s, notify=True, respect_interval=False)
+    assert code == m.EXIT_OK
+    assert err == {"error": "gas-maintenance", "message": "每日23:30至次日00:30暂停办理此业务，请稍候再来"}
+    mock_push.assert_not_called()
+    saved = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert "gas_maintenance" in saved
+    assert "23:30" in saved["gas_maintenance"]["message"]
+
+
+def test_successful_query_clears_stale_auth_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    st_file = tmp_path / "state.json"
+    st_file.write_text(
+        json.dumps(
+            {
+                "last_auth_error_at": "2026-11-23T12:00:00+08:00",
+                "gas_last_auth_error_at": "2026-11-23T12:00:00+08:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(m, "STATE_FILE", st_file)
+    s = _make_settings(tmp_path)
+
+    monkeypatch.setattr(
+        m,
+        "query_balance",
+        mock.MagicMock(return_value=qe.QueryResult(balance=100.0, unit="度", room_id="100-1--2-301", payload={})),
+    )
+    monkeypatch.setattr(
+        m,
+        "query_gas",
+        mock.MagicMock(return_value=qg.GasResult(balance=50.0, subs_code="1800001", meter_reading="100", payload={})),
+    )
+
+    assert m.fetch_and_update_elec(s, notify=False) == (m.EXIT_OK, None)
+    assert m.fetch_and_update_gas(s, notify=False, respect_interval=False) == (m.EXIT_OK, None)
+    saved = json.loads(st_file.read_text(encoding="utf-8"))
+    assert "last_auth_error_at" not in saved
+    assert "gas_last_auth_error_at" not in saved
+
+
+def test_web_import_gas_token_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("GAS_TOKEN=old_tok\nGAS_REFRESH_TOKEN=old_ref\n", encoding="utf-8")
+    monkeypatch.setattr(cfg, "ENV_FILE", env_file)
+
+    raw_json = '{"access_token": "acc_12345678", "refresh_token": "ref_87654321", "expires_in": 7200}'
+    resp = web_server._import_curl(raw_json)
+    assert resp["ok"] is True
+    assert set(resp["updated_keys"]) == {"GAS_TOKEN", "GAS_REFRESH_TOKEN", "GAS_TOKEN_ISSUED_AT"}
+
+    text = env_file.read_text(encoding="utf-8")
+    assert "GAS_TOKEN=acc_12345678" in text
+    assert "GAS_REFRESH_TOKEN=ref_87654321" in text
+    assert "GAS_TOKEN_ISSUED_AT=" in text
+
+    # 也支持嵌套在 data 对象中的 JSON 格式
+    nested_json = '{"code": 0, "data": {"access_token": "acc_nested", "refresh_token": "ref_nested"}}'
+    resp2 = web_server._import_curl(nested_json)
+    assert resp2["ok"] is True
+    text2 = env_file.read_text(encoding="utf-8")
+    assert "GAS_TOKEN=acc_nested" in text2
+    assert "GAS_REFRESH_TOKEN=ref_nested" in text2

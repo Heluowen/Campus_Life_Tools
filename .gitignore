@@ -7,6 +7,7 @@ state.json
 # 会话 Cookie 轮换持久化 / 保活进程锁与日志
 cookies.json
 keepalive.lock
+keepalive.pid
 keepalive.log
 ttl_log.txt
 
