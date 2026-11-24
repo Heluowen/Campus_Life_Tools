@@ -14,6 +14,8 @@ from dataclasses import dataclass
 
 import httpx
 
+from net_utils import build_client, run_with_fallback
+
 GAS_HOST = "https://weixin.towngasvcc.com"
 GAS_OAUTH = "https://weixin.towngasvcc.com/vcc-oauth"
 
@@ -135,10 +137,13 @@ def _refresh_tokens(
     ts = str(int(time.time() * 1000))
     params = {"clientid": clientid, "timestamp": ts}
     params["sign"] = _sign_params(params)
-    try:
-        with httpx.Client(timeout=timeout, trust_env=trust_env, follow_redirects=False) as c:
+    def _do_refresh(use_trust_env: bool) -> dict:
+        with build_client(timeout=timeout, trust_env=use_trust_env, follow_redirects=False) as c:
             r = c.post(url, params=params, data={"refreshToken": refresh_token})
-        data = r.json()
+        return r.json()
+
+    try:
+        data = run_with_fallback(_do_refresh, trust_env=trust_env)
     except Exception:  # noqa: BLE001 - 刷新尽力而为，失败交给上层提示重新抓包
         return None
     if not isinstance(data, dict):
@@ -191,20 +196,26 @@ def query_gas(
         headers = {"Authorization": f"Bearer {tok}", "Accept": "*/*"}
         if cookie:
             headers["Cookie"] = cookie
-        last_error: GasQueryError | None = None
-        with httpx.Client(timeout=timeout, follow_redirects=True, trust_env=trust_env) as client:
-            for attempt in range(attempts):
-                try:
-                    resp = client.get(url, headers=headers)
-                except httpx.TimeoutException:
-                    last_error = GasQueryError("燃气查询超时")
-                except httpx.HTTPError as exc:
-                    last_error = GasQueryError(f"燃气查询网络失败：{exc}")
-                else:
-                    return _parse_gas(resp)
-                if attempt < attempts - 1:
-                    time.sleep(_RETRY_DELAY)
-        raise last_error or GasQueryError("燃气查询失败（未知原因）")
+
+        def _attempt_with(use_trust_env: bool) -> GasResult:
+            last_error: GasQueryError | None = None
+            with build_client(timeout=timeout, follow_redirects=True, trust_env=use_trust_env) as client:
+                for attempt in range(attempts):
+                    try:
+                        resp = client.get(url, headers=headers)
+                    except httpx.TimeoutException as exc:
+                        last_error = GasQueryError("燃气查询超时")
+                        last_error.__cause__ = exc
+                    except httpx.HTTPError as exc:
+                        last_error = GasQueryError(f"燃气查询网络失败：{exc}")
+                        last_error.__cause__ = exc
+                    else:
+                        return _parse_gas(resp)
+                    if attempt < attempts - 1:
+                        time.sleep(_RETRY_DELAY)
+            raise last_error or GasQueryError("燃气查询失败（未知原因）")
+
+        return run_with_fallback(_attempt_with, trust_env=trust_env)
 
     try:
         return _call(token)

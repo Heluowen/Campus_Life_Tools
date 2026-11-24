@@ -43,7 +43,11 @@ EXIT_QUERY_FAILED = 4
 
 AUTH_ALERT_COOLDOWN = timedelta(hours=1)   # 登录失效提醒冷却（保活模式下防刷屏）
 ERROR_ALERT_COOLDOWN = timedelta(hours=1)  # 查询失败提醒冷却
+SPIKE_ALERT_COOLDOWN = timedelta(hours=2)  # 异常高耗电提醒冷却（防重复刷屏）
 HISTORY_MAX = 1200  # 至少覆盖完整 7 天高频采集（7*144=1008），配合同小时同值合并可保存更久
+RECHARGE_HISTORY_MAX = 50  # 最多保留最近 50 条自动识别的充值记录
+ELEC_RECHARGE_MIN_DELTA = 5.0   # 电量单次上涨 >= 5 度记为充值事件
+GAS_RECHARGE_MIN_DELTA = 10.0   # 气费单次上涨 >= 10 元记为充值事件
 
 _STATE_LOCK = threading.Lock()
 
@@ -133,6 +137,100 @@ def _append_history(state: dict, key: str, now: datetime, balance: float) -> Non
 
     hist.append({"t": ts, "bal": bal_val})
     state[key] = hist[-HISTORY_MAX:]
+
+
+def _record_recharge_if_jumped(
+    state: dict,
+    *,
+    prev_balance: float | None,
+    new_balance: float,
+    min_delta: float,
+    recharges_key: str,
+    now: datetime,
+    unit: str,
+) -> dict | None:
+    """余额相比上次出现明显正向跳升时，自动记录一笔充值流水。"""
+    if not isinstance(prev_balance, (int, float)):
+        return None
+    delta = round(new_balance - float(prev_balance), 2)
+    if delta < min_delta:
+        return None
+    event = {
+        "t": now.isoformat(timespec="seconds"),
+        "before": round(float(prev_balance), 2),
+        "after": round(new_balance, 2),
+        "delta": delta,
+        "unit": unit,
+    }
+    items = state.get(recharges_key)
+    if not isinstance(items, list):
+        items = []
+    items.append(event)
+    state[recharges_key] = items[-RECHARGE_HISTORY_MAX:]
+    return event
+
+
+def calc_window_consumption(history: list, now: datetime, window: timedelta) -> float:
+    """精确计算最近 window 时段内的净消耗（仅累加相邻余额下降差值，完全免疫中途充值干扰）。"""
+    if not isinstance(history, list) or len(history) < 2:
+        return 0.0
+    cutoff = now - window
+    pts: list[tuple[datetime, float]] = []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        try:
+            dt = datetime.fromisoformat(str(item.get("t", "")))
+            bal = float(item.get("bal"))
+        except (ValueError, TypeError):
+            continue
+        if dt.tzinfo is None and cutoff.tzinfo is not None:
+            dt = dt.replace(tzinfo=cutoff.tzinfo)
+        elif dt.tzinfo is not None and cutoff.tzinfo is None:
+            cutoff = cutoff.replace(tzinfo=dt.tzinfo)
+        if dt >= cutoff:
+            pts.append((dt, bal))
+    if len(pts) < 2:
+        return 0.0
+    pts.sort(key=lambda x: x[0])
+    total = 0.0
+    for i in range(1, len(pts)):
+        drop = pts[i - 1][1] - pts[i][1]
+        if drop > 0:
+            total += drop
+    return round(total, 2)
+
+
+def detect_recharges_from_history(history: list, min_delta: float, unit: str) -> list[dict]:
+    """从已有历史曲线中提取所有充值跳变点（兼容旧数据回溯与前端标注）。"""
+    if not isinstance(history, list) or len(history) < 2:
+        return []
+    pts: list[tuple[str, float]] = []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        t = str(item.get("t", ""))
+        try:
+            bal = float(item.get("bal"))
+        except (ValueError, TypeError):
+            continue
+        if t:
+            pts.append((t, bal))
+    pts.sort(key=lambda x: x[0])
+    out: list[dict] = []
+    for i in range(1, len(pts)):
+        delta = round(pts[i][1] - pts[i - 1][1], 2)
+        if delta >= min_delta:
+            out.append(
+                {
+                    "t": pts[i][0],
+                    "before": round(pts[i - 1][1], 2),
+                    "after": round(pts[i][1], 2),
+                    "delta": delta,
+                    "unit": unit,
+                }
+            )
+    return out[-RECHARGE_HISTORY_MAX:]
 
 
 def _cooldown_ok(state: dict, key: str, now: datetime, cooldown: timedelta) -> bool:
@@ -294,12 +392,39 @@ def fetch_and_update_elec(
             push_ok = _push(settings, title, content, dry_run)
 
         if not dry_run:
+            prev_bal = state.get("last_balance")
             state.pop("last_error", None)
             state.pop("last_auth_error_at", None)
             state["last_balance"] = round(result.balance, 2)
             state["last_query_time"] = now.isoformat()
             state["last_level"] = level
+            _record_recharge_if_jumped(
+                state,
+                prev_balance=prev_bal,
+                new_balance=result.balance,
+                min_delta=ELEC_RECHARGE_MIN_DELTA,
+                recharges_key="elec_recharges",
+                now=now,
+                unit=result.unit or "度",
+            )
             _append_history(state, "history", now, result.balance)
+
+            # 异常高耗电检测（最近 1 小时净消耗 >= ELEC_SPIKE_THRESHOLD 时告警，带 2 小时冷却）
+            spike_th = settings.alert.hourly_spike_threshold
+            if notify and spike_th > 0:
+                hour_used = calc_window_consumption(state.get("history") or [], now, timedelta(hours=1))
+                if hour_used >= spike_th and _cooldown_ok(state, "last_spike_alert_at", now, SPIKE_ALERT_COOLDOWN):
+                    s_title = "⚡ 宿舍异常高耗电提醒"
+                    s_content = (
+                        f"宿舍：{settings.api.display_room}\n"
+                        f"最近 1 小时消耗：{hour_used:.2f} {result.unit or '度'}（告警阈值 ≥ {spike_th:g}）\n"
+                        f"当前剩余：{result.balance_text}\n"
+                        f"建议检查空调或大功率电器是否未关闭。\n"
+                        f"查询时间：{_fmt_time(now)}"
+                    )
+                    if _push(settings, s_title, s_content, dry_run) or settings.push.is_none:
+                        state["last_spike_alert_at"] = now.isoformat()
+
             if should_notify and (push_ok or settings.push.is_none):
                 state["last_alert_date"] = today
                 state["last_notified_level"] = level
@@ -445,6 +570,7 @@ def fetch_and_update_gas(
             push_ok = _push(settings, title, content, dry_run)
 
         if not dry_run:
+            prev_gas = state.get("gas_balance")
             state.pop("gas_last_error", None)
             state.pop("gas_last_auth_error_at", None)
             state.pop("gas_maintenance", None)
@@ -453,6 +579,15 @@ def fetch_and_update_gas(
             state["gas_level"] = level
             state["gas_subs_code"] = result.subs_code
             state["gas_meter_reading"] = result.meter_reading
+            _record_recharge_if_jumped(
+                state,
+                prev_balance=prev_gas,
+                new_balance=result.balance,
+                min_delta=GAS_RECHARGE_MIN_DELTA,
+                recharges_key="gas_recharges",
+                now=now,
+                unit="元",
+            )
             _append_history(state, "gas_history", now, result.balance)
             if should_notify and (push_ok or settings.push.is_none):
                 state["gas_last_alert_date"] = today

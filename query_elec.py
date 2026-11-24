@@ -21,6 +21,7 @@ from pathlib import Path
 import httpx
 
 from config import ApiSettings
+from net_utils import build_client, run_with_fallback
 
 GATEWAY_URL = "https://app.xiaoyuan.ccb.com/LHECISM/B2CMainPlat_00"
 TXCODE_BALANCE = "YJF004"
@@ -264,24 +265,34 @@ def query_balance(
         merged_cookies.update(store)
 
     def _do_query(query_cookies: dict) -> QueryResult:
-        inner_error: QueryError | None = None
-        with httpx.Client(timeout=timeout, follow_redirects=True, trust_env=trust_env, cookies=query_cookies) as client:
-            for attempt in range(attempts):
-                try:
-                    resp = client.post(gateway, headers=headers, data=form)
-                except httpx.TimeoutException:
-                    inner_error = QueryError(f"请求超时（>{timeout:g} 秒）")
-                except httpx.HTTPError as exc:
-                    inner_error = QueryError(f"网络请求失败：{exc}")
-                else:
-                    _save_cookie_store(cookie_store_path, client.cookies)
-                    if resp.status_code >= 500:
-                        inner_error = QueryError(f"服务端错误 HTTP {resp.status_code}")
+        def _attempt_with(use_trust_env: bool) -> QueryResult:
+            inner_error: QueryError | None = None
+            with build_client(
+                timeout=timeout,
+                follow_redirects=True,
+                trust_env=use_trust_env,
+                cookies=query_cookies,
+            ) as client:
+                for attempt in range(attempts):
+                    try:
+                        resp = client.post(gateway, headers=headers, data=form)
+                    except httpx.TimeoutException as exc:
+                        inner_error = QueryError(f"请求超时（>{timeout:g} 秒）")
+                        inner_error.__cause__ = exc
+                    except httpx.HTTPError as exc:
+                        inner_error = QueryError(f"网络请求失败：{exc}")
+                        inner_error.__cause__ = exc
                     else:
-                        return _parse_response(resp)
-                if attempt < attempts - 1:
-                    time.sleep(_RETRY_DELAY)
-        raise inner_error or QueryError("查询失败（未知原因）")
+                        _save_cookie_store(cookie_store_path, client.cookies)
+                        if resp.status_code >= 500:
+                            inner_error = QueryError(f"服务端错误 HTTP {resp.status_code}")
+                        else:
+                            return _parse_response(resp)
+                    if attempt < attempts - 1:
+                        time.sleep(_RETRY_DELAY)
+            raise inner_error or QueryError("查询失败（未知原因）")
+
+        return run_with_fallback(_attempt_with, trust_env=trust_env)
 
     try:
         return _do_query(merged_cookies)

@@ -159,3 +159,32 @@
 6. **隐私与示例脱敏**（`.env.example` / `config.py` / `README.md` / `docs/REVERSE_NOTES.md` / `docs/CHANGELOG_SYNC.md`）
    - 清除文档与配置模板中残留的具体宿舍房号示例与本机绝对路径。
 
+---
+
+## 6. 增量更新记录（2026-11-24：T1 稳定性升级 + T2 智能分析与 Web 控制中心）
+
+在 `5fd8520` 基础上完成稳定性强化与前端控制中心升级（`pytest -v tests` — **20 passed**）：
+
+### 6.1 实战稳定性（T1）
+1. **网络层代理/直连自动回退 + 短连接抗 SSL EOF**（新增 `net_utils.py`，接入 `query_elec.py` / `query_gas.py`）
+   - 使用 `build_client()` 禁用 Keep-Alive 复用陈旧 TLS 连接（`max_keepalive_connections=0`）；
+   - 默认开启 `AUTO_PROXY_FALLBACK=1`：遇到 `ConnectError / ProxyError / SSL EOF / WinError 10054` 等传输层闪断时自动尝试切换相反的 `trust_env` 重试一次（认证失效或业务报错绝不盲目切换），覆盖电费查询、燃气查询及燃气 `refreshToken` 接口。
+2. **保活按数据源独立调度 + `.env` 热感知唤醒 + 日志轮转**（重构 `keep_alive.py`）
+   - 引入 `SourceScheduler`：电费与燃气拥有各自独立的调度时钟，电费会话失效单独退避 15 分钟时**不再拖累燃气查询与 90 分钟主动续期**；
+   - 主循环改为 15 秒分片睡眠，检测到 `.env` 文件 `mtime` 变更时立刻提前唤醒巡检；
+   - 日志改用 `RotatingFileHandler`（单文件上限 `1 MB`，最多保留 `3` 份 `.log.1~.log.3`，同步加入 `.gitignore`）。
+3. **Windows 免管理员登录自启脚本**（新增 `install_autostart.bat` / `uninstall_autostart.bat`）
+   - 向当前用户 Startup 目录写入静默 VBScript（`CampusLifeMonitor_AutoStart.vbs`），无需管理员权限即可在开机登录后无黑窗拉起面板与保活守护；卸载脚本一键清理。
+
+### 6.2 智能消耗分析与 Web 控制中心（T2-1 & T2-2）
+1. **精准消耗统计 + 自动充值识别 + 异常高耗电告警**（`config.py` / `main.py` / `web/static/index.html`）
+   - 前后端消耗计算改为逐段累加正向下降值（`calc_window_consumption` / `sumDrops`），彻底免疫中途充值造成的消耗归零或预计可用天数失效；燃气卡片同步补齐「今日消耗」与「预计可用」；
+   - 余额正向跳升（电费 ≥ 5 度、燃气 ≥ 10 元）自动记入 `state["elec_recharges"]` / `state["gas_recharges"]` 并兼容回溯历史曲线，在趋势图上标注绿色 `+delta` 徽标与充值流水条；
+   - 新增可选配置 `ELEC_SPIKE_THRESHOLD`（度/小时，默认 `0` 禁用）：最近 1 小时净消耗达标触发 `⚡ 宿舍异常高耗电提醒`（2 小时冷却）。
+2. **Web 控制中心升级**（`web/server.py` / `web/static/index.html`）
+   - 新增 `GET/POST /api/settings` 与右上角「⚙️ 设置」弹窗：网页直接热改宿舍显示名、电费预警/告急/异常耗电阈值、燃气预警阈值/保活间隔、每日一次防骚扰及多渠道推送开关（不暴露任何密钥）；
+   - 新增 `POST /api/test_push`：设置弹窗内一键发送测试通知验证推送渠道；
+   - 新增 `GET /api/logs?tail=80` 与页面底部可折叠「📜 保活实时日志」面板（带状态高亮与 30 秒自动同步）；
+   - 燃气卡片新增按秒刷新的「🔄 自动续期倒计时」展示（距离下次 90 分钟主动续期及 120 分钟总过期剩余时长）。
+
+

@@ -4,11 +4,12 @@
 # 本地运行状态（每次运行自动更新，不入库）
 state.json
 
-# 会话 Cookie 轮换持久化 / 保活进程锁与日志
+# 会话 Cookie 轮换持久化 / 保活进程锁与日志（含轮转备份 .log.1/.log.2/.log.3）
 cookies.json
 keepalive.lock
 keepalive.pid
 keepalive.log
+keepalive.log.*
 ttl_log.txt
 
 # 计划任务启动脚本（本机专用）

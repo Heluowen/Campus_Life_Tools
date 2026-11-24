@@ -372,3 +372,220 @@ def test_web_import_gas_token_json(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     text2 = env_file.read_text(encoding="utf-8")
     assert "GAS_TOKEN=acc_nested" in text2
     assert "GAS_REFRESH_TOKEN=ref_nested" in text2
+
+
+def test_net_utils_proxy_fallback_on_ssl_eof() -> None:
+    import httpx
+    import net_utils
+
+    seen: list[bool] = []
+
+    def flaky(use_trust_env: bool) -> str:
+        seen.append(use_trust_env)
+        if not use_trust_env:
+            err = qe.QueryError("网络请求失败：[SSL: UNEXPECTED_EOF_WHILE_READING]")
+            err.__cause__ = httpx.ConnectError("EOF occurred in violation of protocol")
+            raise err
+        return "recovered"
+
+    assert net_utils.run_with_fallback(flaky, trust_env=False, allow_fallback=True) == "recovered"
+    assert seen == [False, True]
+
+    # 业务认证错误（非网络传输闪断）不得触发 trust_env 切换重试
+    seen_auth: list[bool] = []
+
+    def auth_fail(use_trust_env: bool) -> str:
+        seen_auth.append(use_trust_env)
+        raise qe.AuthExpiredError("expired")
+
+    with pytest.raises(qe.AuthExpiredError):
+        net_utils.run_with_fallback(auth_fail, trust_env=False, allow_fallback=True)
+    assert seen_auth == [False]
+
+
+def test_source_scheduler_independent_backoff_and_env_wakeup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_file = tmp_path / ".env"
+    s = _make_settings(
+        tmp_path,
+        GAS_QUERY_INTERVAL="1800",
+        GAS_REFRESH_TOKEN="ref_valid",
+        GAS_TOKEN_ISSUED_AT=str(int(time.time() - 5100)),  # 距 90 分钟主动续期只剩 5 分钟
+    )
+    monkeypatch.setattr(ka, "ENV_FILE", env_file)
+    monkeypatch.setattr(ka, "load_settings", lambda: s)
+
+    # 模拟电费会话失效，而燃气正常
+    monkeypatch.setattr(
+        m,
+        "fetch_and_update_elec",
+        mock.MagicMock(return_value=(m.EXIT_AUTH_EXPIRED, {"error": "auth", "message": "expired"})),
+    )
+    monkeypatch.setattr(
+        m,
+        "fetch_and_update_gas",
+        mock.MagicMock(return_value=(m.EXIT_OK, None)),
+    )
+
+    sched = ka.SourceScheduler(elec_interval=600)
+    t0 = 1000.0
+    code, details = sched.step(t0)
+    assert code == m.EXIT_AUTH_EXPIRED
+    assert any("电费(auth)" in d for d in details)
+    assert any("燃气: OK" in d for d in details)
+    # 电费独立退避 >= 900s，但燃气必须在临近 90 分钟续期点（约 305s）被唤醒，不受电费退避牵连！
+    assert sched.next_elec_at - t0 >= 900.0
+    assert 200.0 <= (sched.next_gas_at - t0) <= 360.0
+    assert sched.next_wakeup_seconds(t0) == pytest.approx(sched.next_gas_at - t0, abs=1.0)
+
+    # 模拟 .env 文件被热更新，调度器应立即将两个源的下次执行时间提前到当前时刻
+    new_mtime = env_file.stat().st_mtime + 10.0
+    import os as _os
+
+    _os.utime(env_file, (new_mtime, new_mtime))
+    assert sched.check_env_reload(t0 + 20.0) is True
+    assert sched.next_elec_at <= t0 + 20.0
+    assert sched.next_gas_at <= t0 + 20.0
+
+
+def test_keepalive_rotating_log_handler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    log_path = tmp_path / "keepalive.log"
+    monkeypatch.setattr(ka, "_LOG_MAX_BYTES", 200)
+    monkeypatch.setattr(ka, "_LOG_BACKUP_COUNT", 2)
+    ka._init_log_handler(log_path)
+    try:
+        for i in range(25):
+            ka._log(f"rotation-check-line-{i:02d}-" + ("x" * 20))
+    finally:
+        ka._init_log_handler(None)
+
+    assert log_path.exists()
+    assert (tmp_path / "keepalive.log.1").exists()
+    assert not (tmp_path / "keepalive.log.3").exists()
+
+
+def test_recharge_detection_and_window_consumption_immune_to_topup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tz = timezone(timedelta(hours=8))
+    t0 = datetime(2026, 11, 24, 10, 0, 0, tzinfo=tz)
+    # 模拟：100 -> 97（耗 3）-> 297（充 +200）-> 294.5（耗 2.5）；净消耗应为 5.5，而不是负数！
+    hist = [
+        {"t": t0.isoformat(timespec="seconds"), "bal": 100.0},
+        {"t": (t0 + timedelta(minutes=20)).isoformat(timespec="seconds"), "bal": 97.0},
+        {"t": (t0 + timedelta(minutes=30)).isoformat(timespec="seconds"), "bal": 297.0},
+        {"t": (t0 + timedelta(minutes=50)).isoformat(timespec="seconds"), "bal": 294.5},
+    ]
+    used = m.calc_window_consumption(hist, t0 + timedelta(minutes=55), timedelta(hours=1))
+    assert used == 5.5
+
+    recharges = m.detect_recharges_from_history(hist, min_delta=5.0, unit="度")
+    assert len(recharges) == 1
+    assert recharges[0]["delta"] == 200.0
+    assert recharges[0]["before"] == 97.0
+    assert recharges[0]["after"] == 297.0
+
+
+def test_hourly_spike_alert_and_cooldown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    st_file = tmp_path / "state.json"
+    tz = timezone(timedelta(hours=8))
+    now = datetime(2026, 11, 24, 15, 0, 0, tzinfo=tz)
+    # 40 分钟前电量 106.0，本次降到 100.0 -> 1 小时消耗 6.0 度，超过阈值 5.0
+    st_file.write_text(
+        json.dumps(
+            {
+                "last_balance": 106.0,
+                "history": [{"t": (now - timedelta(minutes=40)).isoformat(timespec="seconds"), "bal": 106.0}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(m, "STATE_FILE", st_file)
+    monkeypatch.setattr(m, "_now", lambda _s: now)
+    s = _make_settings(
+        tmp_path,
+        ELEC_SPIKE_THRESHOLD="5.0",
+        PUSH_CHANNEL="bark",
+        BARK_URL="https://api.day.app/test",
+    )
+
+    mock_push = mock.MagicMock(return_value=True)
+    monkeypatch.setattr(m, "send_notification", mock_push)
+    monkeypatch.setattr(
+        m,
+        "query_balance",
+        mock.MagicMock(return_value=qe.QueryResult(balance=100.0, unit="度", room_id="100-1--2-301", payload={})),
+    )
+
+    assert m.fetch_and_update_elec(s, notify=True) == (m.EXIT_OK, None)
+    assert mock_push.call_count == 1
+    assert "异常高耗电" in mock_push.call_args.args[1]
+
+    # 10 分钟后再掉 1 度仍在 2 小时冷却期内，不得重复刷屏推送
+    monkeypatch.setattr(m, "_now", lambda _s: now + timedelta(minutes=10))
+    monkeypatch.setattr(
+        m,
+        "query_balance",
+        mock.MagicMock(return_value=qe.QueryResult(balance=99.0, unit="度", room_id="100-1--2-301", payload={})),
+    )
+    assert m.fetch_and_update_elec(s, notify=True) == (m.EXIT_OK, None)
+    assert mock_push.call_count == 1
+
+
+def test_web_control_center_settings_logs_and_test_push(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_file = tmp_path / ".env"
+    log_file = tmp_path / "keepalive.log"
+    log_file.write_text("[2026-11-24 22:00:00] line1\n[2026-11-24 22:10:00] line2\n", encoding="utf-8")
+
+    s = _make_settings(
+        tmp_path,
+        PUSH_CHANNEL="bark",
+        BARK_URL="https://api.day.app/testkey",
+        GAS_REFRESH_TOKEN="ref_ok",
+        GAS_CLIENTID="ch_ok",
+        GAS_TOKEN_ISSUED_AT=str(int(time.time() - 600)),
+    )
+    monkeypatch.setattr(cfg, "ENV_FILE", env_file)
+    monkeypatch.setattr(web_server, "LOG_FILE", log_file)
+
+    with mock.patch.dict("os.environ", {}, clear=True):
+        cur = web_server._settings_payload()
+        assert cur["configured_channels"]["bark"] is True
+        assert cur["configured_channels"]["wecom"] is False
+
+        res = web_server._update_settings(
+            {
+                "warn_threshold": 30,
+                "critical_threshold": 8,
+                "hourly_spike_threshold": 4.5,
+                "gas_warn_threshold": 20,
+                "gas_query_interval": 1200,
+                "push_channel": "bark",
+            }
+        )
+        assert res["ok"] is True
+        assert res["settings"]["warn_threshold"] == 30.0
+        assert res["settings"]["hourly_spike_threshold"] == 4.5
+        assert res["settings"]["gas_query_interval"] == 1200
+
+        # 未配置 wecom 凭据时尝试启用应被拦截
+        with pytest.raises(ValueError, match="WECOM_WEBHOOK"):
+            web_server._update_settings({"push_channel": "wecom"})
+
+        # 测试推送调用 notifier
+        with mock.patch.object(web_server, "send_notification", return_value=True) as mp:
+            tp = web_server._send_test_push()
+            assert tp["ok"] is True
+            assert mp.call_count == 1
+
+        # 读取实时日志与燃气续期倒计时
+        logs = web_server._read_logs(tail=1)
+        assert logs["total_lines"] == 2
+        assert logs["lines"] == ["[2026-11-24 22:10:00] line2"]
+
+        ts = web_server._gas_token_status(cfg.load_settings(env_path=env_file))
+        assert ts["has_refresh"] is True
+        assert 4700 <= ts["next_refresh_in_sec"] <= 4810

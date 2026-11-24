@@ -100,6 +100,7 @@ class AlertSettings:
     warn_threshold: float
     critical_threshold: float
     warn_once_per_day: bool
+    hourly_spike_threshold: float = 0.0  # 异常高耗电告警阈值（度/小时），0 表示禁用
 
 
 @dataclass(frozen=True)
@@ -235,6 +236,7 @@ def load_settings(env_path: Path | None = None) -> Settings:
         warn_threshold=_float("WARN_THRESHOLD", 20.0),
         critical_threshold=_float("CRITICAL_THRESHOLD", 5.0),
         warn_once_per_day=_bool("WARN_ONCE_PER_DAY", True),
+        hourly_spike_threshold=_float("ELEC_SPIKE_THRESHOLD", 0.0),
     )
     if alert.warn_threshold <= 0:
         raise ConfigError("WARN_THRESHOLD 必须大于 0")
@@ -242,6 +244,8 @@ def load_settings(env_path: Path | None = None) -> Settings:
         raise ConfigError("CRITICAL_THRESHOLD 不能为负数（0 表示禁用二级阈值）")
     if alert.critical_threshold > 0 and alert.critical_threshold >= alert.warn_threshold:
         raise ConfigError("CRITICAL_THRESHOLD 必须小于 WARN_THRESHOLD（设为 0 表示禁用二级阈值）")
+    if alert.hourly_spike_threshold < 0:
+        raise ConfigError("ELEC_SPIKE_THRESHOLD 不能为负数（0 表示禁用异常耗电告警）")
 
     wecom_webhook = _raw("WECOM_WEBHOOK")
     pushplus_token = _raw("PUSHPLUS_TOKEN")

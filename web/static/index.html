@@ -129,6 +129,31 @@
     font-family:ui-monospace, Consolas, monospace;font-size:12px;outline:none}
   .modal textarea:focus{border-color:rgba(34,211,238,.6)}
   .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:14px}
+  .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px}
+  @media (max-width:560px){ .form-grid{grid-template-columns:1fr} }
+  .field{display:flex;flex-direction:column;gap:5px}
+  .field label{font-size:12px;color:var(--muted)}
+  .field input[type="number"],.field input[type="text"]{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.15);
+    border-radius:10px;color:var(--text);padding:7px 10px;font-size:13px;outline:none;font-variant-numeric:tabular-nums}
+  .field input:focus{border-color:rgba(34,211,238,.6)}
+  .field-full{grid-column:1 / -1}
+  .ch-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:2px}
+  .ch-tag{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:10px;font-size:12px;
+    background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.12);cursor:pointer;user-select:none}
+  .ch-tag.disabled{opacity:.42;cursor:not-allowed}
+  .ch-tag input{accent-color:#22d3ee}
+  .recharge-strip{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,.06);font-size:12px;color:var(--muted);align-items:center}
+  .recharge-badge{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:999px;
+    background:rgba(52,211,153,.13);border:1px solid rgba(52,211,153,.32);color:#6ee7b7;font-variant-numeric:tabular-nums}
+  .log-card{padding:16px 22px}
+  .log-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+  .log-head h2{font-size:14.5px;font-weight:650;display:flex;align-items:center;gap:8px}
+  .log-pre{margin-top:12px;max-height:240px;overflow:auto;background:rgba(5,9,20,.65);border:1px solid rgba(255,255,255,.08);
+    border-radius:12px;padding:12px 14px;font-family:ui-monospace, Consolas, monospace;font-size:11.8px;line-height:1.6;
+    color:#cbd5e1;white-space:pre-wrap;word-break:break-word}
+  .log-pre .l-ok{color:#6ee7b7}
+  .log-pre .l-err{color:#fca5a5}
+  .log-pre .l-warn{color:#fcd34d}
   @media (max-width:720px){ .bal .num{font-size:52px} }
 </style>
 </head>
@@ -144,8 +169,9 @@
     </div>
     <div class="hdr-right">
       <div class="clock"><span class="dot" id="liveDot"></span><span id="clock">--:--:--</span></div>
-      <div style="display:flex;align-items:center;gap:10px">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end">
         <span class="clock" id="syncInfo" style="font-size:12px">页面每 30 秒自动同步</span>
+        <button class="btn-ghost" id="openSettingsBtn" type="button">⚙️ 设置</button>
         <button class="btn-ghost" id="openCurlModalBtn" type="button">更新凭据</button>
       </div>
     </div>
@@ -216,10 +242,13 @@
         <span class="chip warn" id="gasChipLow">⏳ 燃气余额低于提醒阈值</span>
       </div>
       <div class="bal-sub" id="gasMaintNote" style="margin-top:8px;font-size:11.5px;color:var(--faint)">🕒 服务维护时段：每日 23:30–次日 00:30 暂停业务查询</div>
+      <div class="bal-sub" id="gasTokenCountdown" style="margin-top:4px;font-size:11.5px;color:#93c5fd">🔄 自动续期状态读取中…</div>
     </div>
     <div class="stats">
       <div class="stat"><span class="k">户号</span><span class="v" id="gasSubsCode">—</span></div>
       <div class="stat"><span class="k">表读数</span><span class="v" id="gasMeter">—</span></div>
+      <div class="stat"><span class="k">今日消耗</span><span class="v" id="gasTodayUsage">—</span></div>
+      <div class="stat"><span class="k">预计可用</span><span class="v" id="gasEstDays">—</span></div>
       <div class="stat"><span class="k">上次查询</span><span class="v" id="gasLastQuery">—</span></div>
       <div class="stat"><span class="k">提醒阈值</span><span class="v" id="gasWarn">—</span></div>
       <button class="btn gas" id="gasRefreshBtn" type="button"><span class="spin"></span>立即刷新</button>
@@ -245,6 +274,7 @@
       <canvas id="chart"></canvas>
       <div class="chart-empty" id="chartEmpty">数据不足：按小时统计，攒够两个统计点后显示</div>
     </div>
+    <div class="recharge-strip" id="elecRechargeStrip" style="display:none"></div>
   </section>
 
   <!-- 燃气趋势 -->
@@ -263,6 +293,19 @@
       <canvas id="gasChart"></canvas>
       <div class="chart-empty" id="gasChartEmpty">数据不足：每 12 小时统计，攒够两个统计点后显示</div>
     </div>
+    <div class="recharge-strip" id="gasRechargeStrip" style="display:none"></div>
+  </section>
+
+  <!-- 实时运行日志 -->
+  <section class="card log-card">
+    <div class="log-head">
+      <h2>📜 保活实时日志 <span class="hint" id="logMeta" style="font-size:12px;color:var(--faint);font-weight:400">keepalive.log</span></h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn-ghost" id="refreshLogsBtn" type="button">刷新日志</button>
+        <button class="btn-ghost" id="toggleLogsBtn" type="button">展开</button>
+      </div>
+    </div>
+    <div class="log-pre" id="logPre" style="display:none">正在加载日志…</div>
   </section>
 
   <footer>
@@ -272,6 +315,60 @@
 </div>
 
 <div class="toast" id="toast"></div>
+
+<div class="modal-mask" id="settingsModal">
+  <div class="modal">
+    <h3>⚙️ 监控控制中心设置</h3>
+    <p>修改后立即原子写入本地 <code>.env</code>，面板与保活守护无需重启自动生效（不含密钥字段）。</p>
+    <div class="form-grid">
+      <div class="field">
+        <label for="setRoomName">宿舍显示名</label>
+        <input id="setRoomName" type="text" placeholder="如 1栋-101">
+      </div>
+      <div class="field">
+        <label for="setGasInterval">燃气保活最小间隔（秒）</label>
+        <input id="setGasInterval" type="number" min="60" max="86400" step="60">
+      </div>
+      <div class="field">
+        <label for="setWarnTh">电费预警阈值（度）</label>
+        <input id="setWarnTh" type="number" min="0.1" step="0.5">
+      </div>
+      <div class="field">
+        <label for="setCritTh">电费告急阈值（度，0=禁用）</label>
+        <input id="setCritTh" type="number" min="0" step="0.5">
+      </div>
+      <div class="field">
+        <label for="setSpikeTh">异常高耗电告警（度/小时，0=禁用）</label>
+        <input id="setSpikeTh" type="number" min="0" step="0.5">
+      </div>
+      <div class="field">
+        <label for="setGasWarnTh">燃气预警阈值（元）</label>
+        <input id="setGasWarnTh" type="number" min="0.1" step="1">
+      </div>
+      <div class="field field-full">
+        <label>推送渠道开关（仅可勾选已在 .env 配置凭据的渠道；全不选即关闭推送）</label>
+        <div class="ch-row" id="pushChannelBoxes">
+          <label class="ch-tag" data-ch="wecom"><input type="checkbox" value="wecom">企业微信</label>
+          <label class="ch-tag" data-ch="pushplus"><input type="checkbox" value="pushplus">PushPlus</label>
+          <label class="ch-tag" data-ch="serverchan"><input type="checkbox" value="serverchan">Server酱</label>
+          <label class="ch-tag" data-ch="bark"><input type="checkbox" value="bark">Bark</label>
+        </div>
+      </div>
+      <div class="field field-full">
+        <label class="ch-tag" style="width:fit-content">
+          <input id="setWarnOnce" type="checkbox">一级低余额告警每日最多推送一次（防骚扰）
+        </label>
+      </div>
+    </div>
+    <div class="modal-actions" style="justify-content:space-between;flex-wrap:wrap">
+      <button class="btn-ghost" id="testPushBtn" type="button">🔔 发送测试推送</button>
+      <div style="display:flex;gap:10px">
+        <button class="btn-ghost" id="cancelSettingsBtn" type="button">取消</button>
+        <button class="btn" id="saveSettingsBtn" type="button" style="padding:8px 16px;font-size:13px"><span class="spin"></span>保存设置</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <div class="modal-mask" id="curlModal">
   <div class="modal">
@@ -324,29 +421,94 @@ function setPill(el, level) {
   const [txt, cls] = map[level] || ["未知", "unk"];
   el.textContent = txt; el.className = "pill " + cls;
 }
+// 精确累加相邻下降差值（自动过滤中途充值引发的余额正向跳升）
+function sumDrops(sortedPts) {
+  let total = 0;
+  for (let i = 1; i < sortedPts.length; i++) {
+    const drop = sortedPts[i - 1].bal - sortedPts[i].bal;
+    if (drop > 0) total += drop;
+  }
+  return total;
+}
 function todayUsage(history) {
   if (!Array.isArray(history) || history.length < 2) return null;
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const pts = history.map((p) => ({ t: new Date(p.t), bal: Number(p.bal) }))
     .filter((p) => !Number.isNaN(p.t.getTime()) && !Number.isNaN(p.bal));
-  const todays = pts.filter((p) => p.t >= today);
+  const todays = pts.filter((p) => p.t >= today).sort((a, b) => a.t - b.t);
   if (todays.length < 2) return null;
-  todays.sort((a, b) => a.t - b.t);
-  return Math.max(0, todays[0].bal - todays[todays.length - 1].bal);
+  return sumDrops(todays);
 }
 function estDays(history, balance) {
-  if (!Array.isArray(history) || history.length < 2 || !balance) return null;
+  if (!Array.isArray(history) || history.length < 2 || !balance || balance <= 0) return null;
   const pts = history.map((p) => ({ t: new Date(p.t), bal: Number(p.bal) }))
     .filter((p) => !Number.isNaN(p.t.getTime()) && !Number.isNaN(p.bal))
     .sort((a, b) => a.t - b.t);
   if (pts.length < 2) return null;
-  const first = pts[0], last = pts[pts.length - 1];
-  const hours = (last.t - first.t) / 3600000;
+  const hours = (pts[pts.length - 1].t - pts[0].t) / 3600000;
   if (hours < 0.5) return null;
-  const drop = first.bal - last.bal;
+  const drop = sumDrops(pts);
   if (drop <= 0) return null;
   const days = balance / (drop / (hours / 24));
   return Number.isFinite(days) ? days : null;
+}
+function fmtDurationMin(sec) {
+  if (sec === null || sec === undefined || Number.isNaN(Number(sec))) return "—";
+  const s = Math.round(Number(sec));
+  if (s <= 0) return "即将触发";
+  const m = Math.floor(s / 60);
+  const h = Math.floor(m / 60);
+  if (h > 0) return `${h} 小时 ${m % 60} 分钟`;
+  if (m > 0) return `${m} 分钟`;
+  return `${s} 秒`;
+}
+function renderGasTokenCountdown() {
+  const el = $("gasTokenCountdown");
+  if (!el) return;
+  const ts = state.gas_token_status;
+  if (!ts) { el.style.display = "none"; return; }
+  el.style.display = "";
+  if (!ts.has_refresh) {
+    el.style.color = "#fbbf24";
+    el.textContent = "🔄 未配置 refresh_token：当前仅支持单次 token 有效期内查询";
+    return;
+  }
+  if (!ts.issued_at) {
+    el.style.color = "#93c5fd";
+    el.textContent = "🔄 已开启自动续期（等待首次刷新对齐计时）";
+    return;
+  }
+  const elapsed = (Date.now() / 1000) - ts.issued_at;
+  const untilRefresh = Math.round(5400 - elapsed);
+  const untilExpire = Math.round(7200 - elapsed);
+  if (untilExpire <= 0) {
+    el.style.color = "#f87171";
+    el.textContent = "🔄 当前 access_token 已到期，下次查询将自动用 refresh_token 续期";
+  } else if (untilRefresh <= 0) {
+    el.style.color = "#fcd34d";
+    el.textContent = `🔄 已进入主动续期窗口（总剩余 ${fmtDurationMin(untilExpire)}，下次巡检自动换新）`;
+  } else {
+    el.style.color = "#93c5fd";
+    el.textContent = `🔄 距离下次自动续期约 ${fmtDurationMin(untilRefresh)}（当前 token 剩余 ${fmtDurationMin(untilExpire)}）`;
+  }
+}
+function renderRechargeStrip(elId, recharges) {
+  const el = $(elId);
+  if (!el) return;
+  if (!Array.isArray(recharges) || recharges.length === 0) {
+    el.style.display = "none";
+    el.innerHTML = "";
+    return;
+  }
+  el.style.display = "flex";
+  const recent = recharges.slice(-4).reverse();
+  el.innerHTML = `<span>💰 自动识别的充值记录：</span>` + recent.map((r) => {
+    const d = new Date(r.t);
+    const ts = Number.isNaN(d.getTime())
+      ? r.t
+      : `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    return `<span class="recharge-badge" title="${r.before} → ${r.after} ${r.unit || ''}">+${fmtNum(r.delta, 1)} ${r.unit || ""} · ${ts}</span>`;
+  }).join("");
 }
 
 function render(d) {
@@ -399,6 +561,10 @@ function render(d) {
     $("gasWarn").innerHTML = `&lt; ${gw} 元`;
     $("gasSubsCode").textContent = d.gas_subs_code || "—";
     $("gasMeter").textContent = d.gas_meter_reading || "—";
+    const gUsed = todayUsage(d.gas_history);
+    $("gasTodayUsage").innerHTML = gUsed === null ? "—" : `${fmtNum(gUsed, 2)} <small>元</small>`;
+    const gDays = estDays(d.gas_history, gbal);
+    $("gasEstDays").innerHTML = gDays === null ? "—" : `约 ${gDays < 1 ? "不足 1" : Math.round(gDays)} <small>天</small>`;
     $("gasLastQuery").textContent = fmtTime(d.gas_last_query_time);
     $("gasSub").textContent = Number.isNaN(gbal)
       ? "暂无燃气数据"
@@ -426,9 +592,12 @@ function render(d) {
       const winText = d.gas_maintenance_window || "每日 23:30–次日 00:30";
       maintNote.textContent = `🕒 服务维护时段：${winText} 暂停业务查询（维护期不触发故障告警）`;
     }
+    renderGasTokenCountdown();
+    renderRechargeStrip("gasRechargeStrip", d.gas_recharges);
     renderChart("gasChart");
   }
 
+  renderRechargeStrip("elecRechargeStrip", d.elec_recharges);
   $("syncInfo").textContent = "上次同步 " + fmtTime(d.server_time || null);
   $("liveDot").className = "dot on";
   renderChart("chart");
@@ -524,6 +693,9 @@ const CHART_CONF = {
 
 function chartHistory(id) {
   return id === "gasChart" ? (state.gas_history || []) : (state.history || []);
+}
+function chartRecharges(id) {
+  return id === "gasChart" ? (state.gas_recharges || []) : (state.elec_recharges || []);
 }
 
 const chartGeo = {}; // id -> {pts, X, Y, values, isBar, unit, bucketMs, ...} 供悬停交互使用
@@ -672,6 +844,33 @@ function drawChart(canvas, empty, pts, opts) {
     ctx.beginPath(); ctx.arc(X(lastP.t), Y(lastP.last), 3.6, 0, Math.PI * 2);
     ctx.fillStyle = color; ctx.fill();
     ctx.strokeStyle = color + "44"; ctx.lineWidth = 6; ctx.stroke();
+
+    // 在余量曲线上标注自动识别的充值事件（绿色虚线 + 💰 +delta 徽标）
+    const recharges = chartRecharges(id);
+    if (Array.isArray(recharges) && recharges.length) {
+      recharges.forEach((rc) => {
+        const rt = new Date(rc.t).getTime();
+        if (!Number.isFinite(rt) || rt < t0 || rt > t1) return;
+        const rx = X(rt);
+        ctx.save();
+        ctx.strokeStyle = "rgba(52,211,153,.55)";
+        ctx.setLineDash([3, 3]);
+        ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.moveTo(rx, padT); ctx.lineTo(rx, padT + ih); ctx.stroke();
+        ctx.setLineDash([]);
+        const tag = `+${Number(rc.delta).toFixed(0)}`;
+        ctx.font = "10.5px ui-sans-serif, system-ui";
+        const tw = ctx.measureText(tag).width;
+        const bx = Math.max(padL, Math.min(w - padR - tw - 10, rx - (tw + 10) / 2));
+        _roundRect(ctx, bx, padT + 2, tw + 10, 16, 5);
+        ctx.fillStyle = "rgba(16,185,129,.22)";
+        ctx.strokeStyle = "rgba(52,211,153,.55)";
+        ctx.fill(); ctx.stroke();
+        ctx.fillStyle = "#6ee7b7";
+        ctx.fillText(tag, bx + 5, padT + 13.5);
+        ctx.restore();
+      });
+    }
   }
 
   // 时间轴标签：小时级显示 HH:MM，12 小时级显示 M/D HH
@@ -814,7 +1013,152 @@ async function gasRefresh() {
 
 function tickClock() {
   $("clock").textContent = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+  if (state.gas_enabled) renderGasTokenCountdown();
 }
+
+// ---------- 控制中心设置弹窗 ----------
+async function openSettingsModal() {
+  try {
+    const res = await fetch("/api/settings", { cache: "no-store" });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast("加载设置失败：" + (body.message || ("HTTP " + res.status)), "err");
+      return;
+    }
+    $("setRoomName").value = body.room_name || "";
+    $("setWarnTh").value = body.warn_threshold ?? 20;
+    $("setCritTh").value = body.critical_threshold ?? 5;
+    $("setSpikeTh").value = body.hourly_spike_threshold ?? 0;
+    $("setGasWarnTh").value = body.gas_warn_threshold ?? 15;
+    $("setGasInterval").value = body.gas_query_interval ?? 1800;
+    $("setWarnOnce").checked = !!body.warn_once_per_day;
+
+    const configured = body.configured_channels || {};
+    const active = new Set(body.push_channels || []);
+    $("pushChannelBoxes").querySelectorAll(".ch-tag").forEach((tag) => {
+      const ch = tag.getAttribute("data-ch");
+      const cb = tag.querySelector("input");
+      const ok = !!configured[ch];
+      cb.disabled = !ok;
+      cb.checked = ok && active.has(ch);
+      tag.classList.toggle("disabled", !ok);
+      tag.title = ok ? "已配置凭据，可勾选启用" : "未在 .env 配置该渠道凭据";
+    });
+    $("settingsModal").classList.add("show");
+  } catch (err) {
+    toast("加载设置失败：" + err.message, "err");
+  }
+}
+
+async function saveSettingsModal() {
+  const btn = $("saveSettingsBtn");
+  btn.disabled = true; btn.classList.add("loading");
+  try {
+    const picked = [];
+    $("pushChannelBoxes").querySelectorAll("input:checked").forEach((cb) => picked.push(cb.value));
+    const payload = {
+      room_name: $("setRoomName").value.trim(),
+      warn_threshold: parseFloat($("setWarnTh").value),
+      critical_threshold: parseFloat($("setCritTh").value),
+      hourly_spike_threshold: parseFloat($("setSpikeTh").value),
+      gas_warn_threshold: parseFloat($("setGasWarnTh").value),
+      gas_query_interval: parseInt($("setGasInterval").value, 10),
+      warn_once_per_day: $("setWarnOnce").checked,
+      push_channel: picked.length ? picked.join(",") : "none",
+    };
+    const res = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast("保存失败：" + (body.message || ("HTTP " + res.status)), "err");
+      return;
+    }
+    $("settingsModal").classList.remove("show");
+    toast(body.message || "设置已保存", "ok");
+    fetchStatus();
+  } catch (err) {
+    toast("保存失败：" + err.message, "err");
+  } finally {
+    btn.disabled = false; btn.classList.remove("loading");
+  }
+}
+
+async function sendTestPush() {
+  const btn = $("testPushBtn");
+  btn.disabled = true;
+  try {
+    const res = await fetch("/api/test_push", { method: "POST" });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast("测试推送失败：" + (body.message || ("HTTP " + res.status)), "err");
+      return;
+    }
+    toast(body.message || "测试推送已发送", "ok");
+  } catch (err) {
+    toast("测试推送失败：" + err.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ---------- 保活实时日志面板 ----------
+let logsExpanded = localStorage.getItem("logsExpanded") === "1";
+function escHtml(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+async function fetchLogs() {
+  const pre = $("logPre");
+  try {
+    const res = await fetch("/api/logs?tail=80", { cache: "no-store" });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.message || ("HTTP " + res.status));
+    $("logMeta").textContent = body.exists
+      ? `${body.path} · 最近 ${body.lines.length} / 共 ${body.total_lines} 行`
+      : "keepalive.log（尚未生成）";
+    if (!body.lines || !body.lines.length) {
+      pre.textContent = "暂无日志记录";
+      return;
+    }
+    pre.innerHTML = body.lines.map((line) => {
+      const cls = /失败|失效|错误|error/i.test(line)
+        ? "l-err"
+        : (/退避|维护|跳过|警告/.test(line) ? "l-warn" : (/成功|巡检完成|OK/.test(line) ? "l-ok" : ""));
+      return cls ? `<span class="${cls}">${escHtml(line)}</span>` : escHtml(line);
+    }).join("\n");
+    pre.scrollTop = pre.scrollHeight;
+  } catch (err) {
+    pre.textContent = "读取日志失败：" + err.message;
+  }
+}
+function applyLogsToggle() {
+  $("logPre").style.display = logsExpanded ? "" : "none";
+  $("toggleLogsBtn").textContent = logsExpanded ? "收起" : "展开";
+  if (logsExpanded) fetchLogs();
+}
+
+$("openSettingsBtn").addEventListener("click", openSettingsModal);
+$("cancelSettingsBtn").addEventListener("click", () => $("settingsModal").classList.remove("show"));
+$("settingsModal").addEventListener("click", (ev) => {
+  if (ev.target === $("settingsModal")) $("settingsModal").classList.remove("show");
+});
+$("saveSettingsBtn").addEventListener("click", saveSettingsModal);
+$("testPushBtn").addEventListener("click", sendTestPush);
+$("toggleLogsBtn").addEventListener("click", () => {
+  logsExpanded = !logsExpanded;
+  localStorage.setItem("logsExpanded", logsExpanded ? "1" : "0");
+  applyLogsToggle();
+});
+$("refreshLogsBtn").addEventListener("click", () => {
+  if (!logsExpanded) {
+    logsExpanded = true;
+    localStorage.setItem("logsExpanded", "1");
+  }
+  applyLogsToggle();
+});
+applyLogsToggle();
 
 $("refreshBtn").addEventListener("click", doRefresh);
 $("gasRefreshBtn").addEventListener("click", gasRefresh);
@@ -860,7 +1204,7 @@ window.addEventListener("resize", () => {
 });
 
 tickClock(); setInterval(tickClock, 1000);
-fetchStatus(); setInterval(fetchStatus, REFRESH_POLL_MS);
+fetchStatus(); setInterval(() => { fetchStatus(); if (logsExpanded) fetchLogs(); }, REFRESH_POLL_MS);
 </script>
 </body>
 </html>
