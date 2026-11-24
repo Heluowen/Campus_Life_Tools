@@ -297,7 +297,7 @@ class SourceScheduler:
 
     def next_wakeup_seconds(self, now_mono: float) -> float:
         target = min(self.next_elec_at, self.next_gas_at)
-        return max(1.0, target - now_mono)
+        return max(0.0, target - now_mono)
 
 
 def main() -> int:
@@ -363,7 +363,7 @@ def main() -> int:
                     _log("检测到 .env 已更新，提前唤醒巡检")
                     break
                 remain = scheduler.next_wakeup_seconds(now_mono)
-                if remain <= 0.5:
+                if remain <= 0.0:
                     break
                 time.sleep(min(remain, _WAKE_SLICE_SECONDS))
     except KeyboardInterrupt:

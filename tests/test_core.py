@@ -447,6 +447,9 @@ def test_source_scheduler_independent_backoff_and_env_wakeup(
     assert sched.check_env_reload(t0 + 20.0) is True
     assert sched.next_elec_at <= t0 + 20.0
     assert sched.next_gas_at <= t0 + 20.0
+    # 关键回归测试：到达预定唤醒时间点时，next_wakeup_seconds 必须返回 0.0，绝不能卡在 1.0 导致死循环永不唤醒！
+    assert sched.next_wakeup_seconds(t0 + 20.0) == 0.0
+    assert sched.next_wakeup_seconds(t0 + 5000.0) == 0.0
 
 
 def test_keepalive_rotating_log_handler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
