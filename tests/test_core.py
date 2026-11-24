@@ -18,6 +18,7 @@ for p in (str(ROOT), str(TOOLS)):
         sys.path.insert(0, p)
 
 import config as cfg  # noqa: E402
+import history_db  # noqa: E402
 import keep_alive as ka  # noqa: E402
 import main as m  # noqa: E402
 import notifier  # noqa: E402
@@ -25,6 +26,14 @@ import query_elec as qe  # noqa: E402
 import query_gas as qg  # noqa: E402
 from harvest_creds import parse_curl  # noqa: E402
 from web import server as web_server  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _isolate_local_data_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """强制隔离所有单元测试的本地数据文件（history.db / state.json / cookies.json），绝不污染真实数据！"""
+    monkeypatch.setattr(history_db, "DB_FILE", tmp_path / "test_history.db")
+    monkeypatch.setattr(m, "STATE_FILE", tmp_path / "test_state.json")
+    monkeypatch.setattr(m, "COOKIE_STORE", tmp_path / "test_cookies.json")
 
 
 def _make_settings(tmp_path: Path, **env_overrides: str) -> cfg.Settings:
@@ -592,3 +601,165 @@ def test_web_control_center_settings_logs_and_test_push(
         ts = web_server._gas_token_status(cfg.load_settings(env_path=env_file))
         assert ts["has_refresh"] is True
         assert 4700 <= ts["next_refresh_in_sec"] <= 4810
+
+
+def test_sqlite_archive_sync_billing_wow_and_csv_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import date
+    import history_db
+
+    db_file = tmp_path / "history.db"
+    monkeypatch.setattr(history_db, "DB_FILE", db_file)
+
+    # 构造跨越两周且中途含充值的 state.json 样本：
+    # 上周（11-12 ~ 11-18）：电费消耗 20 度，燃气消耗 10 元
+    # 本周（11-19 ~ 11-25）：电费先耗 10 度，再充 +100 度，再耗 20 度（净消耗 30 度，同比上周 +50%）；燃气消耗 20 元（同比 +100%）
+    fake_state = {
+        "history": [
+            {"t": "2026-11-12T08:00:00+08:00", "bal": 500.0},
+            {"t": "2026-11-15T20:00:00+08:00", "bal": 490.0},
+            {"t": "2026-11-18T22:00:00+08:00", "bal": 480.0},
+            {"t": "2026-11-20T10:00:00+08:00", "bal": 470.0},
+            {"t": "2026-11-20T12:00:00+08:00", "bal": 570.0},  # 充值 +100 度
+            {"t": "2026-11-24T18:00:00+08:00", "bal": 550.0},
+        ],
+        "gas_history": [
+            {"t": "2026-11-12T08:00:00+08:00", "bal": 100.0},
+            {"t": "2026-11-18T22:00:00+08:00", "bal": 90.0},
+            {"t": "2026-11-24T18:00:00+08:00", "bal": 70.0},
+        ],
+    }
+
+    # 幂等导入两次，总数不翻倍
+    history_db.sync_from_state(fake_state, db_path=db_file)
+    history_db.sync_from_state(fake_state, db_path=db_file)
+
+    report = history_db.get_billing_report(
+        start_day="2026-11-01",
+        end_day="2026-11-25",
+        elec_price=0.8,
+        roommates=4,
+        room_name="测试宿舍",
+        today=date(2026, 11, 25),
+        db_path=db_file,
+    )
+    assert report["archive"]["total_samples"] == 9
+    assert report["elec"]["used"] == 50.0
+    assert report["elec"]["recharged"] == 100.0
+    assert report["elec"]["cost_yuan"] == 40.0
+    assert report["gas"]["used"] == 30.0
+    assert report["split"]["total_cost"] == 70.0
+    assert report["split"]["per_person"] == 17.5
+    assert "每人应付 ¥17.50" in report["split"]["share_text"]
+
+    wow = report["week_over_week"]
+    assert wow["elec_previous"] == 20.0
+    assert wow["elec_current"] == 30.0
+    assert wow["elec_pct_change"] == 50.0
+    assert wow["gas_previous"] == 10.0
+    assert wow["gas_current"] == 20.0
+    assert wow["gas_pct_change"] == 100.0
+
+    # 验证每日汇总 CSV 与原始明细 CSV（带 UTF-8 BOM）
+    fname_daily, csv_daily = history_db.export_csv(
+        start_day="2026-11-01",
+        end_day="2026-11-25",
+        mode="daily",
+        elec_price=0.8,
+        roommates=4,
+        today=date(2026, 11, 25),
+        db_path=db_file,
+    )
+    assert fname_daily == "campus_bill_2026-11-01_to_2026-11-25.csv"
+    assert csv_daily.startswith(b"\xef\xbb\xbf")
+    text_daily = csv_daily.decode("utf-8-sig")
+    assert "区间合计" in text_daily
+    assert "室友均摊(4人)" in text_daily
+    assert "17.50" in text_daily
+
+    fname_raw, csv_raw = history_db.export_csv(
+        start_day="2026-11-01",
+        end_day="2026-11-25",
+        mode="raw",
+        today=date(2026, 11, 25),
+        db_path=db_file,
+    )
+    assert fname_raw == "campus_raw_2026-11-01_to_2026-11-25.csv"
+    assert "电费,2026-11-20T12:00:00+08:00" in csv_raw.decode("utf-8-sig")
+
+
+def test_main_fetch_records_to_sqlite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import history_db
+
+    db_file = tmp_path / "history.db"
+    st_file = tmp_path / "state.json"
+    monkeypatch.setattr(history_db, "DB_FILE", db_file)
+    monkeypatch.setattr(m, "STATE_FILE", st_file)
+    s = _make_settings(tmp_path)
+
+    monkeypatch.setattr(
+        m,
+        "query_balance",
+        mock.MagicMock(return_value=qe.QueryResult(balance=120.5, unit="度", room_id="100-1--2-301", payload={})),
+    )
+    monkeypatch.setattr(
+        m,
+        "query_gas",
+        mock.MagicMock(return_value=qg.GasResult(balance=66.0, subs_code="1800001", meter_reading="1500", payload={})),
+    )
+
+    assert m.fetch_and_update_elec(s, notify=False) == (m.EXIT_OK, None)
+    assert m.fetch_and_update_gas(s, notify=False, respect_interval=False) == (m.EXIT_OK, None)
+
+    rep = history_db.get_billing_report(elec_price=0.65, roommates=4, db_path=db_file)
+    assert rep["archive"]["total_samples"] == 2
+
+
+def test_security_hardening_env_injection_csv_formula_csrf_and_nan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+
+    # 1. .env 写入禁止换行符/空字节注入与非法键名
+    env_file = tmp_path / ".env"
+    env_file.write_text("CCB_ROOM_NAME=ok\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="换行"):
+        cfg.update_env_many({"CCB_ROOM_NAME": "room\nPUSH_CHANNEL=evil"}, env_path=env_file)
+    with pytest.raises(ValueError, match="非法"):
+        cfg.update_env_many({"BAD KEY": "123"}, env_path=env_file)
+
+    # 2. CSV 导出防止公式注入（=HYPERLINK 等以 =/@/+/- 开头的非数字文本自动加前导单引号）
+    assert history_db._safe_csv_cell("=CMD|' /C calc'!A0").startswith("'")
+    assert history_db._safe_csv_cell("@SUM(A1:A2)").startswith("'")
+    assert history_db._safe_csv_cell("-12.50") == "-12.50"
+
+    # 3. Web 服务拒绝跨站 Origin（防 CSRF）与 NaN/Inf 数值注入
+    s = _make_settings(tmp_path)
+    monkeypatch.setattr(cfg, "ENV_FILE", env_file)
+    httpd = web_server._PanelServer(("127.0.0.1", 0), web_server.Handler)
+    port = httpd.server_address[1]
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+    try:
+        with httpx.Client(trust_env=False, timeout=5) as c:
+            # 恶意外部网页跨站 POST 必须返回 403
+            r_csrf = c.post(
+                f"http://127.0.0.1:{port}/api/price",
+                headers={"Origin": "https://evil.example.com"},
+                json={"price": 0.5},
+            )
+            assert r_csrf.status_code == 403
+            assert r_csrf.headers.get("X-Content-Type-Options") == "nosniff"
+            assert r_csrf.headers.get("X-Frame-Options") == "DENY"
+
+            # NaN / Inf 必须返回 400，不得污染 .env
+            r_nan = c.post(
+                f"http://127.0.0.1:{port}/api/price",
+                headers={"Origin": f"http://127.0.0.1:{port}"},
+                content=b'{"price": NaN}',
+            )
+            assert r_nan.status_code == 400
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

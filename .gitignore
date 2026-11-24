@@ -1,8 +1,11 @@
 # 真实凭据与环境（禁止提交）
 .env
 
-# 本地运行状态（每次运行自动更新，不入库）
+# 本地运行状态与 SQLite 历史归档（每次运行自动更新，不入库）
 state.json
+history.db
+history.db-wal
+history.db-shm
 
 # 会话 Cookie 轮换持久化 / 保活进程锁与日志（含轮转备份 .log.1/.log.2/.log.3）
 cookies.json

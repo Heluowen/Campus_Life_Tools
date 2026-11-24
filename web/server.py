@@ -7,6 +7,8 @@
 
 接口：
     GET  /api/status      → 当前状态 + 历史记录 + 充值事件 + 燃气续期倒计时（JSON）
+    GET  /api/billing     → SQLite 长期归档账单统计（月度/自定义区间 + 同比上周 + 室友 AA 均摊）
+    GET  /api/export.csv  → 一键导出 Excel 友好 UTF-8 BOM CSV（每日账单汇总 / 原始采样明细）
     GET  /api/logs        → 读取 keepalive.log 最近 N 行实时运行日志
     GET  /api/settings    → 获取当前可调参数与推送渠道配置状态（不暴露敏感密钥）
     POST /api/settings    → 批量更新预警/紧急/异常耗电/燃气阈值、查询间隔、推送渠道到 .env
@@ -21,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -33,6 +36,7 @@ TOOLS_DIR = BASE / "tools"
 LOG_FILE = BASE / "keepalive.log"
 sys.path.insert(0, str(BASE))
 
+import history_db  # noqa: E402
 import main as m  # noqa: E402
 from config import ConfigError, PUSH_CHANNELS, load_settings, update_env, update_env_many  # noqa: E402
 from notifier import NotifyError, send_notification  # noqa: E402
@@ -40,6 +44,59 @@ from notifier import NotifyError, send_notification  # noqa: E402
 MAX_BODY_BYTES = 1024 * 256  # 256 KB，防意外大包
 GAS_REFRESH_AGE_SECONDS = 5400.0  # 90 分钟主动续期线
 GAS_TOKEN_TTL_SECONDS = 7200.0    # 120 分钟总有效期
+
+
+def _ensure_archive_synced() -> None:
+    """将 state.json 中已有历史幂等同步至 SQLite，确保老数据无缝进入长期账单。"""
+    state = m._load_state()
+    if state:
+        history_db.sync_from_state(
+            state,
+            elec_min_recharge=m.ELEC_RECHARGE_MIN_DELTA,
+            gas_min_recharge=m.GAS_RECHARGE_MIN_DELTA,
+        )
+
+
+def _billing_payload(
+    *,
+    start: str | None = None,
+    end: str | None = None,
+    roommates: int = 4,
+    price: float | None = None,
+) -> dict:
+    settings = load_settings()
+    _ensure_archive_synced()
+    eff_price = settings.api.price if price is None else max(0.0, float(price))
+    return history_db.get_billing_report(
+        start_day=start or None,
+        end_day=end or None,
+        elec_price=eff_price,
+        roommates=roommates,
+        room_name=settings.api.display_room,
+        today=m._now(settings).date(),
+    )
+
+
+def _export_csv_payload(
+    *,
+    start: str | None = None,
+    end: str | None = None,
+    mode: str = "daily",
+    roommates: int = 4,
+    price: float | None = None,
+) -> tuple[str, bytes]:
+    settings = load_settings()
+    _ensure_archive_synced()
+    eff_price = settings.api.price if price is None else max(0.0, float(price))
+    return history_db.export_csv(
+        start_day=start or None,
+        end_day=end or None,
+        mode="raw" if mode == "raw" else "daily",
+        elec_price=eff_price,
+        roommates=roommates,
+        room_name=settings.api.display_room,
+        today=m._now(settings).date(),
+    )
 
 
 def _merge_recharges(recorded: list | None, history: list, min_delta: float, unit: str) -> list[dict]:
@@ -141,19 +198,41 @@ def _settings_payload() -> dict:
     }
 
 
+def _finite_float(val: object, name: str) -> float:
+    num = float(val)
+    if not math.isfinite(num):
+        raise ValueError(f"{name} 必须是有限数值")
+    return num
+
+
+def _is_allowed_local_origin(handler: BaseHTTPRequestHandler) -> bool:
+    """防止跨站网页（CSRF / DNS Rebinding）静默调用本机 127.0.0.1 的 POST 修改接口。"""
+    host = (handler.headers.get("Host") or "").strip().lower()
+    if host:
+        host_only = host.split(":", 1)[0]
+        if host_only not in ("127.0.0.1", "localhost"):
+            return False
+    origin = (handler.headers.get("Origin") or "").strip()
+    if origin:
+        parsed = urlparse(origin)
+        if parsed.scheme not in ("http", "https") or (parsed.hostname or "").lower() not in ("127.0.0.1", "localhost"):
+            return False
+    return True
+
+
 def _update_settings(data: dict) -> dict:
     """校验并原子写入网页控制中心提交的非敏感配置到 .env。"""
     current = load_settings()
     updates: dict[str, str] = {}
 
-    warn = float(data["warn_threshold"]) if "warn_threshold" in data else current.alert.warn_threshold
-    crit = float(data["critical_threshold"]) if "critical_threshold" in data else current.alert.critical_threshold
+    warn = _finite_float(data["warn_threshold"], "电费预警阈值") if "warn_threshold" in data else current.alert.warn_threshold
+    crit = _finite_float(data["critical_threshold"], "电费告急阈值") if "critical_threshold" in data else current.alert.critical_threshold
     spike = (
-        float(data["hourly_spike_threshold"])
+        _finite_float(data["hourly_spike_threshold"], "异常高耗电阈值")
         if "hourly_spike_threshold" in data
         else current.alert.hourly_spike_threshold
     )
-    gas_warn = float(data["gas_warn_threshold"]) if "gas_warn_threshold" in data else current.gas.warn_threshold
+    gas_warn = _finite_float(data["gas_warn_threshold"], "燃气预警阈值") if "gas_warn_threshold" in data else current.gas.warn_threshold
     gas_interval = (
         int(data["gas_query_interval"]) if "gas_query_interval" in data else current.gas.query_interval
     )
@@ -333,6 +412,8 @@ def _send_json(handler: BaseHTTPRequestHandler, code: int, payload: dict) -> Non
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
     handler.send_header("Cache-Control", "no-store")
+    handler.send_header("X-Content-Type-Options", "nosniff")
+    handler.send_header("X-Frame-Options", "DENY")
     handler.end_headers()
     handler.wfile.write(body)
 
@@ -358,6 +439,8 @@ def _send_static(handler: BaseHTTPRequestHandler, rel: str) -> None:
     handler.send_header("Content-Type", ctype)
     handler.send_header("Content-Length", str(len(data)))
     handler.send_header("Cache-Control", "no-cache")
+    handler.send_header("X-Content-Type-Options", "nosniff")
+    handler.send_header("X-Frame-Options", "DENY")
     handler.end_headers()
     handler.wfile.write(data)
 
@@ -382,6 +465,55 @@ class Handler(BaseHTTPRequestHandler):
                 return _send_json(self, 500, {"error": "config", "message": str(exc)})
             except Exception as exc:  # noqa: BLE001
                 return _send_json(self, 500, {"error": "internal", "message": str(exc)})
+        if path == "/api/billing":
+            try:
+                qs = parse_qs(parsed.query)
+                start = (qs.get("start") or [""])[0].strip() or None
+                end = (qs.get("end") or [""])[0].strip() or None
+                roommates = int((qs.get("roommates") or ["4"])[0])
+                price_raw = (qs.get("price") or [""])[0].strip()
+                price_override = _finite_float(price_raw, "单价") if price_raw != "" else None
+                return _send_json(
+                    self,
+                    200,
+                    _billing_payload(start=start, end=end, roommates=roommates, price=price_override),
+                )
+            except (ValueError, TypeError) as exc:
+                return _send_json(self, 400, {"error": "bad-request", "message": str(exc)})
+            except ConfigError as exc:
+                return _send_json(self, 500, {"error": "config", "message": str(exc)})
+            except Exception as exc:  # noqa: BLE001
+                return _send_json(self, 500, {"error": "internal", "message": str(exc)})
+        if path == "/api/export.csv":
+            try:
+                qs = parse_qs(parsed.query)
+                start = (qs.get("start") or [""])[0].strip() or None
+                end = (qs.get("end") or [""])[0].strip() or None
+                mode = (qs.get("mode") or ["daily"])[0].strip().lower()
+                roommates = int((qs.get("roommates") or ["4"])[0])
+                price_raw = (qs.get("price") or [""])[0].strip()
+                price_override = _finite_float(price_raw, "单价") if price_raw != "" else None
+                fname, content = _export_csv_payload(
+                    start=start,
+                    end=end,
+                    mode=mode,
+                    roommates=roommates,
+                    price=price_override,
+                )
+                self.send_response(200)
+                self.send_header("Content-Type", "text/csv; charset=utf-8")
+                self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+                self.send_header("Content-Length", str(len(content)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(content)
+                return
+            except (ValueError, TypeError) as exc:
+                return _send_json(self, 400, {"error": "bad-request", "message": str(exc)})
+            except ConfigError as exc:
+                return _send_json(self, 500, {"error": "config", "message": str(exc)})
+            except Exception as exc:  # noqa: BLE001
+                return _send_json(self, 500, {"error": "internal", "message": str(exc)})
         if path == "/api/logs":
             try:
                 qs = parse_qs(parsed.query)
@@ -394,6 +526,8 @@ class Handler(BaseHTTPRequestHandler):
         return _send_json(self, 404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
+        if not _is_allowed_local_origin(self):
+            return _send_json(self, 403, {"error": "forbidden", "message": "拒绝非本机来源请求（防 CSRF / DNS Rebinding）"})
         path = self.path.split("?")[0]
         if path == "/api/query":
             try:
@@ -419,7 +553,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/price":
             try:
                 data = _read_json_body(self)
-                price = float(data.get("price"))
+                price = _finite_float(data.get("price"), "单价")
                 if not (0 <= price <= 1000):
                     raise ValueError("单价范围应为 0~1000 元/度")
                 update_env("ELEC_PRICE", f"{price:g}")

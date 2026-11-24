@@ -187,4 +187,24 @@
    - 新增 `GET /api/logs?tail=80` 与页面底部可折叠「📜 保活实时日志」面板（带状态高亮与 30 秒自动同步）；
    - 燃气卡片新增按秒刷新的「🔄 自动续期倒计时」展示（距离下次 90 分钟主动续期及 120 分钟总过期剩余时长）。
 
+---
+
+## 7. 增量更新记录（2026-11-25：SQLite 历史长期归档 + 账单/AA 导出 + 安全审计加固）
+
+在 `1796f0d`（修复 `keep_alive.py` `SourceScheduler` 定时唤醒死循环）基础上完成 SQLite 长期归档、月度/学期室友 AA 账单导出与全面安全加固（`pytest -v tests` — **23 passed**）：
+
+1. **零依赖 SQLite 长期归档与账单引擎**（新增 `history_db.py`，接入 `main.py` / `.gitignore`）
+   - 使用 Python 内置 `sqlite3`（WAL 模式 + `closing()` 显式关闭句柄），永久留存历史采样（`samples`）与充值流水（`recharges`），突破 `state.json` 1200 条滑窗限制；`history.db*` 已加入 `.gitignore`；
+   - 自动冷启动迁移 `state.json` 已有历史；支持任意区间精确净消耗（跨天基线衔接 + 免疫中途充值）、区间环比、近 7 天同比上周、室友 N 人 AA 均摊与微信群文案生成；
+   - 支持导出带 UTF-8 BOM 的账单汇总 CSV（含区间合计与室友均摊行）及原始明细 CSV，内置 `_safe_csv_cell()` 防止 Excel 公式注入。
+2. **Web 面板新增「📊 账单/AA」弹窗与下载接口**（`web/server.py` / `web/static/index.html`）
+   - 新增 `GET /api/billing` 与 `GET /api/export.csv`；前端支持本月/上月/近 7 天/近 30 天/本学期/自定义日期切换、室友人数持久化、每日明细表、一键复制 AA 账单文案与两类 CSV 下载。
+3. **代码安全审计加固**（`config.py` / `web/server.py` / `history_db.py` / `web/static/index.html` / `tests/test_core.py`）
+   - 本地 Web `POST` 接口增加 `Host` / `Origin` 本机白名单校验（防 CSRF / DNS Rebinding），响应统一附加 `X-Content-Type-Options: nosniff` 与 `X-Frame-Options: DENY`；
+   - 全量浮点入参加入 `math.isfinite()` 校验（拦截 `NaN` / `Infinity` 污染 `.env`）；
+   - `update_env_many()` 拦截非法键名及 `\n` / `\r` / `\x00` 注入并确保清理临时文件；
+   - 补全前端 `escHtml()` 引号转义，消除 `renderRechargeStrip()` DOM XSS 隐患；
+   - `tests/test_core.py` 增加 `autouse` 全局数据目录隔离 fixture，杜绝测试数据污染本地真实 `history.db` / `state.json`。
+
+
 

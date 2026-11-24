@@ -25,6 +25,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import history_db
 from config import ConfigError, Settings, load_settings, update_env_many
 from notifier import NotifyError, send_notification
 from query_elec import AuthExpiredError, QueryError, QueryResult, query_balance
@@ -398,7 +399,7 @@ def fetch_and_update_elec(
             state["last_balance"] = round(result.balance, 2)
             state["last_query_time"] = now.isoformat()
             state["last_level"] = level
-            _record_recharge_if_jumped(
+            elec_rc = _record_recharge_if_jumped(
                 state,
                 prev_balance=prev_bal,
                 new_balance=result.balance,
@@ -408,6 +409,20 @@ def fetch_and_update_elec(
                 unit=result.unit or "度",
             )
             _append_history(state, "history", now, result.balance)
+            try:
+                ts_iso = now.isoformat(timespec="seconds")
+                history_db.record_sample("elec", ts_iso, result.balance, unit=result.unit or "度")
+                if elec_rc:
+                    history_db.record_recharge(
+                        "elec",
+                        elec_rc["t"],
+                        elec_rc["before"],
+                        elec_rc["after"],
+                        elec_rc["delta"],
+                        unit=elec_rc["unit"],
+                    )
+            except Exception as exc:  # noqa: BLE001 - SQLite 归档失败不影响主监控流程
+                print(f"[WARN] SQLite 电费归档失败：{exc}", file=sys.stderr)
 
             # 异常高耗电检测（最近 1 小时净消耗 >= ELEC_SPIKE_THRESHOLD 时告警，带 2 小时冷却）
             spike_th = settings.alert.hourly_spike_threshold
@@ -579,7 +594,7 @@ def fetch_and_update_gas(
             state["gas_level"] = level
             state["gas_subs_code"] = result.subs_code
             state["gas_meter_reading"] = result.meter_reading
-            _record_recharge_if_jumped(
+            gas_rc = _record_recharge_if_jumped(
                 state,
                 prev_balance=prev_gas,
                 new_balance=result.balance,
@@ -589,6 +604,26 @@ def fetch_and_update_gas(
                 unit="元",
             )
             _append_history(state, "gas_history", now, result.balance)
+            try:
+                ts_iso = now.isoformat(timespec="seconds")
+                history_db.record_sample(
+                    "gas",
+                    ts_iso,
+                    result.balance,
+                    unit="元",
+                    meter_reading=result.meter_reading,
+                )
+                if gas_rc:
+                    history_db.record_recharge(
+                        "gas",
+                        gas_rc["t"],
+                        gas_rc["before"],
+                        gas_rc["after"],
+                        gas_rc["delta"],
+                        unit=gas_rc["unit"],
+                    )
+            except Exception as exc:  # noqa: BLE001 - SQLite 归档失败不影响主监控流程
+                print(f"[WARN] SQLite 燃气归档失败：{exc}", file=sys.stderr)
             if should_notify and (push_ok or settings.push.is_none):
                 state["gas_last_alert_date"] = today
                 state["gas_notified_level"] = level

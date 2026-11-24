@@ -138,9 +138,19 @@ class GasSettings:
 
 
 def update_env_many(updates: dict[str, str], env_path: Path | None = None) -> None:
-    """原子批量更新 .env 中的多个键（存在则替换，不存在则追加），线程安全。"""
+    """原子批量更新 .env 中的多个键（存在则替换，不存在则追加），线程安全，防换行/空字节注入。"""
     if not updates:
         return
+    clean_updates: dict[str, str] = {}
+    for k, v in updates.items():
+        key = str(k).strip()
+        val = str(v)
+        if not key or not all(ch.isalnum() or ch == "_" for ch in key):
+            raise ValueError(f"非法环境变量键名：{key!r}")
+        if "\n" in val or "\r" in val or "\x00" in val:
+            raise ValueError(f"环境变量 {key} 的值不能包含换行或空字节")
+        clean_updates[key] = val
+
     target = env_path or ENV_FILE
     with _ENV_LOCK:
         try:
@@ -148,7 +158,7 @@ def update_env_many(updates: dict[str, str], env_path: Path | None = None) -> No
         except OSError:
             text = ""
         lines = text.splitlines()
-        remaining = dict(updates)
+        remaining = dict(clean_updates)
         out: list[str] = []
         for line in lines:
             replaced = False
@@ -163,8 +173,15 @@ def update_env_many(updates: dict[str, str], env_path: Path | None = None) -> No
             out.append(f"{k}={v}")
         content = "\n".join(out).rstrip("\n") + "\n"
         tmp = target.with_name(f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-        tmp.write_text(content, encoding="utf-8")
-        tmp.replace(target)
+        try:
+            tmp.write_text(content, encoding="utf-8")
+            tmp.replace(target)
+        finally:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
 
 
 def update_env(key: str, value: str, env_path: Path | None = None) -> None:
