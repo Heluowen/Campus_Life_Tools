@@ -13,6 +13,8 @@ keepalive.lock
 keepalive.pid
 keepalive.log
 keepalive.log.*
+tray.lock
+tray.pid
 ttl_log.txt
 
 # 计划任务启动脚本（本机专用）

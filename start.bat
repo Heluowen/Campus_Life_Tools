@@ -4,7 +4,7 @@ setlocal
 cd /d "%~dp0"
 
 echo ============================================
-echo   校园生活监控 - 一键启动（电费 + 燃气）
+echo   校园生活监控 - 一键启动（电费 + 燃气 + 托盘）
 echo ============================================
 echo.
 
@@ -38,11 +38,15 @@ REM keep_alive.py uses OS file lock for single-instance mutual exclusion
 start "" "%PYW%" "%~dp0keep_alive.py" --interval 600 --log-file "%~dp0keepalive.log"
 echo [OK]   保活守护已尝试拉起（单实例互斥，后台无窗口，日志: keepalive.log）
 
+REM tray.py uses OS file lock for single-instance mutual exclusion
+start "" "%PYW%" "%~dp0tray.py" --port 8877
+echo [OK]   系统托盘图标已尝试拉起（悬停查余额，单击唤起 WebUI）
+
 ping -n 3 127.0.0.1 >nul
 start "" http://127.0.0.1:8877
 
 echo.
-echo 完成：全部后台运行、无控制台窗口。
-echo 停止全部服务: 双击 stop.bat
+echo 完成：面板 + 保活 + 系统托盘全部后台无窗口运行。
+echo 停止全部服务: 双击 stop.bat（或右键系统托盘选择「停止全部监控并退出」）
 echo 查看保活日志: type keepalive.log
 if not defined NO_PAUSE pause

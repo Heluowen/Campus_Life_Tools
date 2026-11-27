@@ -763,3 +763,66 @@ def test_security_hardening_env_injection_csv_formula_csrf_and_nan(
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_tray_snapshot_icon_lock_and_tooltip_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tray
+
+    s = _make_settings(tmp_path, CCB_ROOM_NAME="极长测试宿舍展示名-测试截断", ELEC_PRICE="0.69")
+    now_dt = datetime(2026, 11, 27, 23, 40, 0, tzinfo=timezone(timedelta(hours=8)))
+    now_ts = now_dt.timestamp()
+
+    # 1. 正常健康状态：绿标 + 折算金额 + 燃气读数 + tooltip 不超过 Windows 128 字符上限
+    st_ok = {
+        "last_balance": 120.5,
+        "last_level": "ok",
+        "last_query_time": (now_dt - timedelta(minutes=5)).isoformat(),
+        "gas_balance": 75.65,
+        "gas_level": "ok",
+        "gas_meter_reading": "1474",
+        "gas_last_query_time": (now_dt - timedelta(minutes=10)).isoformat(),
+    }
+    snap_ok = tray.build_snapshot(st_ok, s, now_ts=now_ts)
+    assert snap_ok["overall"] == "ok"
+    assert "120.50 度" in snap_ok["elec_line"]
+    assert "75.65 元" in snap_ok["gas_line"]
+    assert len(snap_ok["tooltip"]) <= tray._TOOLTIP_MAX_LEN
+
+    # 2. 数据超过 32 分钟未更新：变黄（low）并标 [待更新]
+    st_stale = dict(st_ok, last_query_time=(now_dt - timedelta(minutes=45)).isoformat())
+    snap_stale = tray.build_snapshot(st_stale, s, now_ts=now_ts)
+    assert snap_stale["overall"] == "low"
+    assert "待更新" in snap_stale["elec_line"]
+
+    # 3. 认证失效且比最近成功时间更新：变红（critical）并标 [凭据失效]
+    st_auth = dict(st_ok, last_auth_error_at=(now_dt - timedelta(minutes=1)).isoformat())
+    snap_auth = tray.build_snapshot(st_auth, s, now_ts=now_ts)
+    assert snap_auth["overall"] == "critical"
+    assert snap_auth["elec_auth_bad"] is True
+    assert "凭据失效" in snap_auth["elec_line"]
+
+    # 4. 动态绘制四种状态图标均成功且尺寸正确
+    for st_name in ("ok", "low", "critical", "unknown"):
+        img = tray.make_tray_image(st_name, size=64)
+        assert img.size == (64, 64)
+        assert img.mode == "RGBA"
+
+    # 5. 托盘单实例内核锁与 PID 文件验证
+    monkeypatch.setattr(tray, "LOCK_FILE", tmp_path / "tray.lock")
+    monkeypatch.setattr(tray, "PID_FILE", tmp_path / "tray.pid")
+    assert tray._acquire_lock() is True
+    try:
+        assert (tmp_path / "tray.pid").read_text(encoding="utf-8").strip() == str(tray.os.getpid())
+        if tray.os.name == "nt":
+            import msvcrt
+
+            with open(tmp_path / "tray.lock", "a+", encoding="utf-8") as fh2:
+                fh2.seek(0)
+                with pytest.raises(OSError):
+                    msvcrt.locking(fh2.fileno(), msvcrt.LK_NBLCK, 1)
+    finally:
+        tray._release_lock()
+    assert not (tmp_path / "tray.lock").exists()
+    assert not (tmp_path / "tray.pid").exists()

@@ -41,6 +41,7 @@ REM Generate a silent VBScript launcher in the current user's Startup folder (no
     echo WshShell.CurrentDirectory = "%PROJ_DIR%"
     echo WshShell.Run """%PYW%"" ""%PROJ_DIR%\web\server.py"" --port 8877", 0, False
     echo WshShell.Run """%PYW%"" ""%PROJ_DIR%\keep_alive.py"" --interval 600 --log-file ""%PROJ_DIR%\keepalive.log""", 0, False
+    echo WshShell.Run """%PYW%"" ""%PROJ_DIR%\tray.py"" --port 8877", 0, False
 )
 
 if not exist "%VBS_FILE%" (
@@ -53,6 +54,7 @@ echo [OK] 已安装当前用户登录自启（无需管理员权限，无黑窗�
 echo      开机登录后自动拉起：
 echo      1. 本地 Web 面板（http://127.0.0.1:8877）
 echo      2. 电费 + 燃气独立保活守护（keepalive.log）
+echo      3. Windows 系统托盘图标（悬停看余额，单击开面板）
 echo.
 echo 如需卸载自启，请双击 uninstall_autostart.bat。
 if not defined NO_PAUSE pause

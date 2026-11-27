@@ -206,5 +206,20 @@
    - 补全前端 `escHtml()` 引号转义，消除 `renderRechargeStrip()` DOM XSS 隐患；
    - `tests/test_core.py` 增加 `autouse` 全局数据目录隔离 fixture，杜绝测试数据污染本地真实 `history.db` / `state.json`。
 
+---
+
+## 8. 增量更新记录（2026-11-27：Windows 系统托盘常驻助手）
+
+在 `63ae236` 基础上新增桌面系统托盘常驻模块（`pytest -v tests` — **24 passed**）：
+
+1. **新增 `tray.py`（基于 `pystray` + `Pillow`）**
+   - 鼠标悬停托盘图标直接展示电费余额（含折算金额）、燃气余额（含表读数）与上次更新时间（内置 120 字符长度上限保护适配 Windows `NOTIFYICONDATA`）；
+   - Pillow 实时绘制状态变色闪电图标（绿=充足 / 黄=偏低或超 32 分钟未更新 / 红=告急或凭据失效 / 灰=未知），状态首次进入预警/失效时自动弹托盘气泡提醒（带去重防刷屏）；
+   - **左键单击**图标快速唤起本地 WebUI（若 Web 服务未监听则自动静默拉起 `web/server.py` 并等就绪后打开浏览器）；**右键菜单**直接展示最新数值并提供快捷刷新（全部/电费/燃气）、查看保活日志、隐藏托盘与停止全部监控；
+   - 采用 OS 内核级单实例锁（`tray.lock` + `tray.pid`，已加入 `.gitignore`）。
+2. **启动与自启脚本全联动**（`start.bat` / `stop.bat` / `install_autostart.bat` / `requirements.txt` / `README.md`）
+   - `start.bat` 与 `install_autostart.bat` 同步静默拉起 `tray.py`；`stop.bat` 同步清理托盘进程及 `tray.pid`/`tray.lock`；`requirements.txt` 补充 `pystray` 与 `Pillow`。
+
+
 
 
